@@ -201,7 +201,7 @@ class MuonTridentAnalysis:
                     rc = self.trackTask.multipleTrackStore['trackCand'][p][trackId].Fit("pol1","QS")
                     ndof=self.trackTask.multipleTrackStore['trackCand'][p][trackId].GetFunction("pol1").GetNDF()
                     chi2=self.trackTask.multipleTrackStore['trackCand'][p][trackId].GetFunction("pol1").GetChisquare() 
-                    if not self.check_reaching(self.trackTask.multipleTrackStore['trackCand'][p][trackId],1,0,p) : acceptance = False
+                    if not self.check_reaching(self.trackTask.multipleTrackStore['trackCand'][p][trackId],1,0,p) : acceptance = False  # DONT FORGET TO SWITCH TO US FOR US QDC
             if not acceptance : continue
             for aHit in self.eventTree.Digi_MuFilterHits:
                 if aHit.GetSystem() == 3 : continue
