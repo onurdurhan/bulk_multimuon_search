@@ -1,0 +1,13 @@
+executable  = search_mu3.sh
+arguments   = $(file) 4809
+output      = output/onur.$(ClusterId).$(ProcId).out
+error       = error/onur.$(ClusterId).$(ProcId).err
+log         = log/onur.log
++JobFlavour = "longlunch"
+Transfer_output_files = ""
+max_retries             = 3
+#queue file from seq 200 299 |
+queue file matching /eos/experiment/sndlhc/convertedData/physics/2022/run_004809/sndsw*.root
+#queue file from missing.txt
+#queue file 264
+#queue file from seq 0 99 |
