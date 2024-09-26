@@ -80,7 +80,9 @@ class MuonTridentAnalysis:
         self.logger.SetLogScreenLevel('WARNING')
         self.logger.SetLogToScreen(True)
         self.f=ROOT.TFile.Open(options.inputFile)
-        self.eventTree = self.f.rawConv
+        if self.f.Get('rawConv'):
+            self.eventTree = self.f.rawConv
+        else : self.eventTree = self.f.cbmsim
         self.eventTree.GetEvent(0)
         self.run      = ROOT.FairRunAna()
         self.ioman = ROOT.FairRootManager.Instance()
@@ -89,7 +91,8 @@ class MuonTridentAnalysis:
         self.source = ROOT.FairFileSource(self.f)
         self.run.SetSource(self.source)
         self.sink = ROOT.FairRootFileSink(self.outFile)
-        self.sink.SetRunId(int(options.runNumber))
+        if self.f.Get('rawConv') : self.sink.SetRunId(int(options.runNumber))
+        else:  self.sink.SetRunId(0)
         self.run.SetSink(self.sink)
         self.HT_tasks = {'muon_reco_task_Sf':SndlhcMuonReco.MuonReco(),
                 'muon_reco_task_DS':SndlhcMuonReco.MuonReco(),
@@ -119,7 +122,8 @@ class MuonTridentAnalysis:
         self.HT_tasks['muon_reco_task_Sf'].SetTrackingCase('passing_mu_Sf')
         self.HT_tasks['muon_reco_task_DS'].SetTrackingCase('passing_mu_DS')
         self.HT_tasks['muon_reco_task_nuInt'].SetTrackingCase('nu_interaction_products')
-        self.run.SetRunId(int(options.runNumber))
+        if self.f.Get("rawConv"): self.run.SetRunId(int(options.runNumber))
+        else:  self.run.SetRunId(0)
         self.run.Init()
         self.OT = self.sink.GetOutTree()
         self.eventTree = self.ioman.GetInTree()
@@ -131,10 +135,10 @@ class MuonTridentAnalysis:
             self.geo.modules['MuFilter'].InitEvent(self.eventTree.EventHeader)
         # if faireventheader, rely on user to select correct geofile.
         self.hist={}
-        self.systemAndPlanes   = {2:5}
-        self.systemAndBars     = {2:10}
+        self.systemAndPlanes   = {1:2,2:5}
+        self.systemAndBars     = {1:7,2:10}
         self.systemAndChannels = {2:16}
-        self.sdict             = {2:'US'}
+        self.sdict             = {1:'Veto',2:'US'}
         self.cases = {1:"single",2:"dimuon",3:"threemuon"}
         for system in self.systemAndPlanes:
             for plane in range(self.systemAndPlanes[system]):
@@ -152,9 +156,9 @@ class MuonTridentAnalysis:
                 orientation = self.systemAndOrientation(system,plane)
                 for bar in range(self.systemAndBars[system]):
                     bar_key = self.sdict[system]+"plane"+str(plane)+orientation+"bar"+str(bar)
-                    if system == 2:
+                    if system == 2 or system == 1:
                         for key in range(1,4):
-                            ut.bookHist(self.hist, "qdc_"+self.cases[key]+bar_key," ",60,0.,300)
+                            ut.bookHist(self.hist, "qdc_"+self.cases[key]+bar_key," ",40,0.,800) # look at the qdc scale !
 
         for p in range(2):
             ut.bookHist(self.hist,"track_dist_"+str(p)," minimum distance between pairs ",100,0,20)
@@ -176,6 +180,13 @@ class MuonTridentAnalysis:
             if n%100000==0 : print("Event at ",n)
             rc = self.eventTree.GetEvent(n)
             rc = self.trackTask.multipleTrackCandidates(nMaxCl=8,dGap=0.2,dMax=0.8,dMax3=0.8,ovMax=1,doublet=True,debug=False)
+#            rc = self.trackTask.multipleTrackCandidates2(MuFilter,hits=self.eventTree.Digi_MuFilterHits)
+            n3D = [0,0]
+            for p in range(2):
+                for trackId in self.trackTask.multipleTrackStore['trackCand'][p]:
+                    if trackId < 100000 and not self.trackTask.multipleTrackStore['doublet']: continue
+                    if trackId in self.trackTask.multipleTrackStore['cloneCand'][p]: continue
+                    n3D[p]+=1
             sorted_clusters = {s * 10 + o: [] for s in range(1, 6) for o in range(2)}
             for aCl in self.trackTask.clusScifi:
                 so = aCl.GetFirst()//100000
@@ -190,13 +201,14 @@ class MuonTridentAnalysis:
                     rc = self.trackTask.multipleTrackStore['trackCand'][p][trackId].Fit("pol1","QS")
                     ndof=self.trackTask.multipleTrackStore['trackCand'][p][trackId].GetFunction("pol1").GetNDF()
                     chi2=self.trackTask.multipleTrackStore['trackCand'][p][trackId].GetFunction("pol1").GetChisquare() 
-                    if not self.check_reaching(self.trackTask.multipleTrackStore['trackCand'][p][trackId],2,4,p) : acceptance = False
+                    if not self.check_reaching(self.trackTask.multipleTrackStore['trackCand'][p][trackId],1,0,p) : acceptance = False
             if not acceptance : continue
             for aHit in self.eventTree.Digi_MuFilterHits:
-                if aHit.GetSystem()!=2:continue
+                if aHit.GetSystem() == 3 : continue
                 sumSignal = self.map2Dict(aHit,'SumOfSignals')
                 detID = aHit.GetDetectorID()
                 if not aHit.isValid() : continue
+                if not self.is_UShit_isolated(aHit): continue
                 system = aHit.GetSystem()
                 plane  = (detID%10000)//1000
                 bar = detID%1000
@@ -206,14 +218,19 @@ class MuonTridentAnalysis:
                     if trackId < 100000 and not self.trackTask.multipleTrackStore['doublet']: continue
                     if trackId in self.trackTask.multipleTrackStore['cloneCand'][0]: continue
                     ex=self.trackTask.multipleTrackStore['trackCand'][0][trackId].Eval(A[2])
-                    if ex<B[1]+5.5 and ex>B[1]-5.5 : n_passing+=1
-                bar_key = "USplane"+str(plane)+"horizontalbar"+str(bar)
-                if n_passing < 1 : continue
-                self.hist["qdc_"+self.cases[n_passing]+bar_key].Fill(sumSignal['Sum'])
+                    if ex<B[1]+2.7 and ex>B[1]-2.7 : n_passing+=1
+                if n_passing < 1 or n_passing > 3 : continue
+                if system == 2 : 
+                    bar_key = "USplane"+str(plane)+"horizontalbar"+str(bar)
+                    self.hist["qdc_"+self.cases[n_passing]+bar_key].Fill(sumSignal['Sum'])
+                if system == 1:
+                    bar_key = "Vetoplane"+str(plane)+"horizontalbar"+str(bar)
+                    self.hist["qdc_"+self.cases[n_passing]+bar_key].Fill(sumSignal['Sum'])
 
 
-            if self.eventTree.EventHeader.isB2noB1():print("bingooo")
-        ut.writeHists(self.hist,"histograms_mu3_qdc"+str(self.options.runNumber)+".root")
+#            if self.eventTree.EventHeader.isB2noB1():print("bingooo")
+        if self.f.Get('rawConv'):  ut.writeHists(self.hist,"histograms_mu3_qdc"+str(self.options.runNumber)+".root")
+        else :  ut.writeHists(self.hist,"histograms_mu3_qdc_MC.root")
         for aHist in self.hist:
             print(aHist,self.hist[aHist].GetEntries())
 
@@ -273,4 +290,22 @@ class MuonTridentAnalysis:
             y = theTrack.Eval(z_mid)
             reaching = (min(y_det) <= y and y <= max(y_det))
         return reaching
+
+    def is_UShit_isolated(self,theHit):
+        detID = theHit.GetDetectorID()
+        the_plane  = (detID%10000)//1000
+        the_bar = detID%1000
+        isolated = True
+        the_system = theHit.GetSystem()
+        for aHit in self.eventTree.Digi_MuFilterHits:
+            if aHit.GetSystem() != the_system : continue
+            if aHit.GetDetectorID() == detID : continue 
+            if (aHit.GetDetectorID()%10000)//1000 == the_plane:
+                if abs(the_bar-aHit.GetDetectorID()%1000)==1:isolated = False
+        return isolated
+            
+
+
+ 
+
 
