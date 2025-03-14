@@ -11,9 +11,21 @@ import numpy as np
 from argparse import ArgumentParser
 import sys
 import gc
+from Tools import Tools
+import BaseCut as BaseCut
+
+
 
 ROOT.gInterpreter.ProcessLine('#include "/afs/cern.ch/work/o/onur/SNDLHCSOFT_2024/sw/rhel9_x86-64/sndsw/master-local1/analysis/tools/sndSciFiTools.h"')
 #ROOT.gROOT.SetBatch(ROOT.kTRUE)
+
+
+
+
+
+
+
+
 
 class MuonTridentEngine:
     "generate histograms for Muon Filter"
@@ -79,24 +91,38 @@ class MuonTridentEngine:
         self.Cluster_Scifi   = self.trackTask.clusScifi
         self.eventTree.GetEvent(0)
         if self.eventTree.EventHeader.ClassName() == 'SNDLHCEventHeader':
+            print("Alignment pars recovered ")
             self.geo.modules['Scifi'].InitEvent(self.eventTree.EventHeader)
             self.geo.modules['MuFilter'].InitEvent(self.eventTree.EventHeader)
         # if faireventheader, rely on user to select correct geofile.
+        self.scifi_hit_density_cut = BaseCut.ScifiHitDensityCut(self.eventTree,self.geo)
+        self.scifi_fiducial_cut = BaseCut.FiducialCut()
+        self.tools = Tools(self.trackTask)        
+ 
+    def event_delta_t_cut(self,delta_e,delta_t):
+        header=self.eventTree.EventHeader
+        current_entry = self.eventTree.GetReadEvent()
+        current_time  = header.GetEventTime()
+        passes = True
+        rc= self.eventTree.GetEvent(current_entry+delta_e)
+        sign = (delta_e>0)-(delta_e<0)
+        if -sign*(current_time-header.GetEventTime()) <= delta_t:
+            passes = False
+        rc=self.eventTree.GetEvent(current_entry)
+        return passes
    
 
     def filter_time(self):
         filteredHits = ROOT.TClonesArray("sndScifiHit",10000)
         mufilter_hits = ROOT.TClonesArray("MuFilterHit",10000)
-#        header  = ROOT.SNDLHCEventHeader()
-#        mufilter_hits = ioman.GetObject("Digi_MuFilterHits")
-        header = self.ioman.GetObject("EventHeader")
+        header = self.ioman.GetObject("EventHeader.")    
         filteredHits.BypassStreamer(ROOT.kTRUE)
-        self.ioman.Register("EventHeader","sndEventHeader,",header,ROOT.kTRUE)
+        self.ioman.Register("EventHeader","sndEventHeader",header,ROOT.kTRUE)
         self.ioman.Register("Digi_ScifiHits", "DigiScifiHit_det", filteredHits, ROOT.kTRUE)
         self.ioman.Register("Digi_MuFilterHits","DigiMuFitlerHit_det",mufilter_hits,ROOT.kTRUE)
         print("things registered")
         B = ROOT.TList()
-        branches_to_copy = {"Digi_ScifiHits", "EventHeader","Digi_MuFilterHits"}
+        branches_to_copy = ["Digi_ScifiHits", "EventHeader","Digi_MuFilterHits"]
         B.SetName('BranchList')
         for aBranch in branches_to_copy:
             B.Add(ROOT.TObjString(aBranch))
@@ -111,6 +137,8 @@ class MuonTridentEngine:
             mufilter_hits.Clear("C") 
             digi_scifi_hits = self.eventTree.Digi_ScifiHits
             if digi_scifi_hits.GetEntries() < 1 : continue
+            if not self.event_delta_t_cut(-1,100):
+                continue
             hits_in_all_planes = True
             for s in range(1,6):
                 for o in range(2):
@@ -135,13 +163,15 @@ class MuonTridentEngine:
     def search_mu3(self):
         scifi_hits = self.ioman.GetObject('Digi_ScifiHits')
         mufilter_hits = self.ioman.GetObject("Digi_MuFilterHits")
+        flag = ROOT.Event_Type('Event_Type') #ROOT.TClonesArray("TObjString",2) # ROOT.TMap() # ROOT.TClonesArray("TObjString",2) # remember 0 for "scifi" 1 for "ds"
         header = self.ioman.GetObject("EventHeader")
-        self.ioman.Register("EventHeader","sndEventHeader,",header,ROOT.kTRUE)
+        self.ioman.Register("EventHeader","sndEventHeader",header,ROOT.kTRUE)
         self.ioman.Register("Digi_ScifiHits", "DigiScifiHit_det", scifi_hits, ROOT.kTRUE)
         self.ioman.Register("Digi_MuFilterHits","DigiMuFitlerHit_det",mufilter_hits,ROOT.kTRUE)
+        self.ioman.Register("Event_Type","MultiMuonType",flag,ROOT.kTRUE)
         print("things registered")
         B_list = ROOT.TList()
-        branches_to_copy = {"Digi_ScifiHits", "EventHeader","Digi_MuFilterHits"}
+        branches_to_copy = {"Digi_ScifiHits", "EventHeader","Digi_MuFilterHits","Event_Type"}
         B_list.SetName('BranchList')
         for aBranch in branches_to_copy:
             B_list.Add(ROOT.TObjString(aBranch))
@@ -150,48 +180,104 @@ class MuonTridentEngine:
         self.ioman.WriteFolder()
         print("loop started !")
         A,B=ROOT.TVector3(),ROOT.TVector3()
-        for n in range(self.eventTree.GetEntries()) : #      self.eventTree.GetEntries()):
+        N_collected = 0
+        for n in range(self.eventTree.GetEntries()) :
             self.eventTree.GetEvent(n)
+            n3D = {"scifi":[0,0],"ds":[0,0]}
+            reco_2dTracks = {"scifi":{0:[],1:[]}, "ds" :{0:[],1:[]}}
+            flag.Clear()
+#            print(f"Flag Cleared - scifi: {flag.GetValue('scifi')}, ds: {flag.GetValue('ds')}")
             if n%100000==0 : print("Event at ",n)
-            busy_event = {0:False,1:False}
-            rc = self.eventTree.GetEvent(n)
             rc = self.trackTask.multipleTrackCandidates(nMaxCl=8,dGap=0.2,dMax=0.8,dMax3=0.8,ovMax=1,doublet=True,debug=False)
-            sorted_clusters = {s * 10 + o: [] for s in range(1, 6) for o in range(2)}
-            for aCl in self.trackTask.clusScifi:
-                so = aCl.GetFirst()//100000
-                sorted_clusters[so].append(aCl)
-            n3D = [0,0]
-            bad_reco = False
             for p in range(2):
                 for trackId in self.trackTask.multipleTrackStore['trackCand'][p]:
-                    if trackId < 100000 and not self.trackTask.multipleTrackStore['doublet']: continue
+                    if trackId < 1000: continue
                     if trackId in self.trackTask.multipleTrackStore['cloneCand'][p]: continue
-                    n3D[p]+=1
-                    for s in range(1,6):
-                        mat  = 1
-                        sipm = 1
-                        channel = 64
-                        plane_id=channel+1000*sipm+10000*mat+100000*p+1000000*s
-                        self.geo.modules['Scifi'].GetSiPMPosition(plane_id,A,B)
-                        ex = self.trackTask.multipleTrackStore['trackCand'][p][trackId].Eval((A[2]+B[2])/2)
-                        rho = 0
-                        for aHit in self.eventTree.Digi_ScifiHits:
-                            if not aHit.isValid():continue
-                            detID = aHit.GetDetectorID()
-                            so = detID//100000
-                            self.geo.modules['Scifi'].GetSiPMPosition(aHit.GetDetectorID(),A,B)
-                            if so != s*10+p: continue
-                            if p == 0 : pos=(A[1]+B[1])/2
-                            else : pos=(A[0]+B[0])/2
-                            if abs(pos-ex)<1 : rho+=1
-                        if rho>10:busy_event[p]=True
-                    rc = self.trackTask.multipleTrackStore['trackCand'][p][trackId].Fit("pol1","QS")
-                    ndof=self.trackTask.multipleTrackStore['trackCand'][p][trackId].GetFunction("pol1").GetNDF()
-                    chi2=self.trackTask.multipleTrackStore['trackCand'][p][trackId].GetFunction("pol1").GetChisquare() 
-                    if chi2/ndof>0.05 : bad_reco = True
-            if n3D != [3,3] : continue
-            if self.eventTree.EventHeader.isB2noB1():print("bingooo")
-            if busy_event[0] and busy_event[1] : continue 
-            if bad_reco :  continue
+                    n3D["scifi"][p]+=1
+                    reco_2dTracks["scifi"][p].append(self.trackTask.multipleTrackStore['trackCand'][p][trackId])
+            """
+            rc=self.trackTask.multipleTrackStore.clear()
+            rc = self.trackTask.multipleTrackCandidates2(self.geo.modules['MuFilter'],self.eventTree.Digi_MuFilterHits) 
+            for p in range(2):
+                for trackId in self.trackTask.multipleTrackStore['trackCand'][p]:
+                    if p == 0 and trackId< 100 : continue
+                    if p == 1 and trackId< 1000: continue
+                    if trackId in self.trackTask.multipleTrackStore['cloneCand'][p]: continue
+                    n3D["ds"][p]+=1
+                    reco_2dTracks["ds"][p].append(self.trackTask.multipleTrackStore['trackCand'][p][trackId])
+            """
+
+            useless_event = {"scifi": True, "ds": True}
+
+# Loop over the keys in n3D
+            for key in n3D:
+                if n3D[key] == [2, 2]:
+                    flag.Add(key,"dimuon")
+                    useless_event[key] = False
+                elif n3D[key] == [3, 3]:
+                    flag.Add(key,"triplemuon")
+                    useless_event[key] = False
+                elif n3D[key] == [4, 4]:
+                    flag.Add(key,"quadramuon")
+                    useless_event[key] = False
+                elif n3D[key] == [5, 5]:
+                    flag.Add(key, "pentamuon")
+                    useless_event[key] = False
+                else:
+                    useless_event[key] = True
+# If all events are useless, skip the rest of the loop
+            if all(useless_event.values()):
+                continue 
+            if n3D['scifi']!=[3,3]:continue
+            sparse_event = self.scifi_hit_density_cut.pass_cut(reco_2dTracks)
+            scifi_fiducial = self.scifi_fiducial_cut.pass_cut(reco_2dTracks)
+ 
+            passes_criteria_scifi = sparse_event and scifi_fiducial
+            passes_criteria_ds = False
+            if passes_criteria_scifi:
+                old_value = flag.GetValue('scifi')
+                if passes_criteria_scifi:
+                    flag.Add("scifi", 'good_' + old_value)
+            else :
+                continue
+
+
+
+
+
+            """
+# If ds is missing and scifi is present but doesn't pass criteria, skip the event and vice versa.
+            if flag.GetValue('ds') == '' and flag.GetValue('scifi')!='' and not passes_criteria_scifi:
+                continue  # Skip if scifi is bad and there's no ds tracks
+            if flag.GetValue('scifi')=='' and flag.GetValue('ds')!='' and not passes_criteria_ds:
+                continue
+
+# Modify the scifi flag based on whether the criteria were met
+            if flag.GetValue('scifi')!='':
+                old_value = flag.GetValue('scifi')
+                if passes_criteria_scifi:
+                    flag.Add("scifi", 'good_' + old_value)
+                else:
+                    flag.Add("scifi",'bad_' + old_value)
+
+# Modify the ds flag, always adding a "bad" label in this case
+            if flag.GetValue('ds')!='' :
+                old_value = flag.GetValue('ds')
+                if passes_criteria_ds:
+                    flag.Add("ds",'good_'+old_value)
+                else:    
+                    flag.Add('ds','bad_' + old_value)
+
+            
+            
+# Print the updated flags for scifi and ds
+#            print(n3D['scifi'],n3D['ds'])
+#            print(f"Writing Event {n}- scifi: {flag.GetValue('scifi')}, ds: {flag.GetValue('ds')}")
+            """
+
             self.ioman.Fill()
+            N_collected+=1
+
         self.ioman.Write()
+#        print(N_collected)
+
