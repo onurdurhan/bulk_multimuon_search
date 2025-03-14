@@ -202,7 +202,7 @@ good_colors = [
 ]
 #hs={ 0:ROOT.THStack("hs0"," dmax vs dmin"),1:ROOT.THStack("hs1"," dmax vs dmin")}
 # MC histogram dictionary
-RATIO=False
+RATIO=True
 if RATIO:
     hist_data=[data_file.Get("data_dmin_dmax_ratio_0"),data_file.Get("data_dmin_dmax_ratio_1")]
     colors={}
