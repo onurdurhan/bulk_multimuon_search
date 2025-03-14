@@ -10,6 +10,8 @@ from ROOT import TTree
 import numpy as np
 from argparse import ArgumentParser
 import sys
+from scipy.optimize import fsolve
+
 
 #ROOT.gROOT.SetBatch(ROOT.kTRUE)
 ROOT.gInterpreter.Declare("""
@@ -158,15 +160,39 @@ class MuonTridentAnalysis:
                     bar_key = self.sdict[system]+"plane"+str(plane)+orientation+"bar"+str(bar)
                     if system == 2 or system == 1:
                         for key in range(1,4):
-                            ut.bookHist(self.hist, "qdc_"+self.cases[key]+bar_key," ",40,0.,800) # look at the qdc scale !
+                            ut.bookHist(self.hist, "qdc_"+self.cases[key]+bar_key," ",40,-10,800) # look at the qdc scale !
+                for s in range(1,5):            
+                    for o in range(2):
+                        so = s*10+o
+                        if so == 40 : continue
+                        ut.bookHist(self.hist,'n_hitsDS_so'+str(so),"",10,0,10)
+        self.gr = {}
+        dmin_bins = [0,1.,2.5,4.5,7.5,11.5,16.5,25.]  # Variable bin widths in Y
+        # Number of bins = (number of edges - 1)
+        n_dmin_bins = len(dmin_bins) - 1
+        dmin_bins_array = ROOT.std.vector('double')(dmin_bins)
+        self.dmax_vs_dmin={}
+ 
 
         for p in range(2):
+            self.dmax_vs_dmin['data_histo_dmax_vs_dmin_'+str(p)] = ROOT.TH2D("h2"+str(p), "2D Histogram with Variable Y Binning;X axis;Y axis",n_dmin_bins,dmin_bins_array.data(),25,0,25)
+            ut.bookHist(self.hist,f'data_dmin_dmax_ratio_{p}',"dmin to dmax ratio",60,0,0.6)
             ut.bookHist(self.hist,"track_dist_"+str(p)," minimum distance between pairs ",100,0,20)
             ut.bookHist(self.hist,"theta_xz","theta xz",100,-0.05,0.05)
             ut.bookHist(self.hist,"theta_yz","theta yz",100,-0.05,0.05)
             ut.bookHist(self.hist,"theta_xz_yz","theta xz vs yz",100,-0.05,0.05,-0.05,0.05)
+            ut.bookHist(self.hist,"dmax_vs_dmin_"+str(p),"",50,0,20.,50,0,20.)
+            ut.bookHist(self.hist,"single_event_hit_time","",50,0,100)
+#            ut.bookCanvas(self.hist,"dmax_vs_dmin"+str(p),"",700,400)
         for p in range(2):
-            ut.bookHist(self.hist,"chi2ndof"+str(p),"chi2 ndof",100,0,0.3)
+            ut.bookHist(self.hist,"chi2ndof"+str(p),"chi2 ndof",50,0,10)
+        
+        for s in range(1,5):
+            for o in range(2):
+                for quality in ["bad","good"]:
+                    ut.bookHist(self.hist,'n_hitsDS_so'+str(s*10+o)+quality,'ds hit density' + str(s*10+o),10,0,10)
+        ut.bookHist(self.hist,"theta_reco"," ",100,0,200,100,0,0.1)
+
 
 
 
@@ -174,35 +200,43 @@ class MuonTridentAnalysis:
         print("loop started !")
         A,B=ROOT.TVector3(),ROOT.TVector3()
         MuFilter= self.geo.modules['MuFilter']
-
+        N_outside = 0
+        N_noisy = 0
+        dmax = {}
+        dmin = {}
+        for i in range(2):
+            dmax["data_"+str(i)]=np.array([],dtype=float)
+            dmin["data_"+str(i)]=np.array([],dtype=float)
         for n in range(self.eventTree.GetEntries()) :
             self.eventTree.GetEvent(n)
             if n%100000==0 : print("Event at ",n)
             rc = self.eventTree.GetEvent(n)
+            flag = self.eventTree.Event_Type
+            if not flag.GetValue("scifi")=='good_triplemuon' :continue
+            n3D = {"scifi":[0,0],"ds":[0,0]}
+            reco_2dTracks = {"scifi":{0:[],1:[]}, "ds" :{0:[],1:[]}}
             rc = self.trackTask.multipleTrackCandidates(nMaxCl=8,dGap=0.2,dMax=0.8,dMax3=0.8,ovMax=1,doublet=True,debug=False)
-#            rc = self.trackTask.multipleTrackCandidates2(MuFilter,hits=self.eventTree.Digi_MuFilterHits)
-            n3D = [0,0]
             for p in range(2):
                 for trackId in self.trackTask.multipleTrackStore['trackCand'][p]:
-                    if trackId < 100000 and not self.trackTask.multipleTrackStore['doublet']: continue
+                    if trackId < 1000: continue
                     if trackId in self.trackTask.multipleTrackStore['cloneCand'][p]: continue
-                    n3D[p]+=1
-            sorted_clusters = {s * 10 + o: [] for s in range(1, 6) for o in range(2)}
-            for aCl in self.trackTask.clusScifi:
-                so = aCl.GetFirst()//100000
-                sorted_clusters[so].append(aCl)
-            n3D = [0,0]
-            acceptance = True
+                    n3D["scifi"][p]+=1
+                    reco_2dTracks["scifi"][p].append(self.trackTask.multipleTrackStore['trackCand'][p][trackId])
+
+            rc=self.trackTask.multipleTrackStore.clear()
+            rc = self.trackTask.multipleTrackCandidates2(self.geo.modules['MuFilter'],self.eventTree.Digi_MuFilterHits) 
             for p in range(2):
                 for trackId in self.trackTask.multipleTrackStore['trackCand'][p]:
-                    if trackId < 100000 and not self.trackTask.multipleTrackStore['doublet']: continue
+                    if p == 0 and trackId< 100 : continue
+                    if p == 1 and trackId< 1000: continue
                     if trackId in self.trackTask.multipleTrackStore['cloneCand'][p]: continue
-                    n3D[p]+=1
-                    rc = self.trackTask.multipleTrackStore['trackCand'][p][trackId].Fit("pol1","QS")
-                    ndof=self.trackTask.multipleTrackStore['trackCand'][p][trackId].GetFunction("pol1").GetNDF()
-                    chi2=self.trackTask.multipleTrackStore['trackCand'][p][trackId].GetFunction("pol1").GetChisquare() 
-                    if not self.check_reaching(self.trackTask.multipleTrackStore['trackCand'][p][trackId],1,0,p) : acceptance = False  # DONT FORGET TO SWITCH TO US FOR US QDC
-            if not acceptance : continue
+                    n3D["ds"][p]+=1
+                    reco_2dTracks["ds"][p].append(self.trackTask.multipleTrackStore['trackCand'][p][trackId])
+            acceptance = {'Veto':True,'US':True}
+            for p in range(2):
+                for aTrack in reco_2dTracks["scifi"][p]:
+                    if not self.check_reaching(aTrack,1,0,p) : acceptance['Veto'] = False
+                    if not self.check_reaching(aTrack,2,4,p) : acceptance['US'] = False
             for aHit in self.eventTree.Digi_MuFilterHits:
                 if aHit.GetSystem() == 3 : continue
                 sumSignal = self.map2Dict(aHit,'SumOfSignals')
@@ -214,25 +248,87 @@ class MuonTridentAnalysis:
                 bar = detID%1000
                 MuFilter.GetPosition(detID,A,B)
                 n_passing = 0
-                for trackId in self.trackTask.multipleTrackStore['trackCand'][0]:
-                    if trackId < 100000 and not self.trackTask.multipleTrackStore['doublet']: continue
-                    if trackId in self.trackTask.multipleTrackStore['cloneCand'][0]: continue
-                    ex=self.trackTask.multipleTrackStore['trackCand'][0][trackId].Eval(A[2])
-                    if ex<B[1]+2.7 and ex>B[1]-2.7 : n_passing+=1
-                if n_passing < 1 or n_passing > 3 : continue
-                if system == 2 : 
+                for aTrack in reco_2dTracks["scifi"][0]:
+                    rc = aTrack.Fit("pol1","QS")
+                    line = aTrack.GetFunction("pol1")
+                    ex=line.Eval((A[2]+B[2])/2)
+                    if ex<(A[1]+B[1])/2+2.8 and ex>(A[1]+B[1])/2-2.8 : 
+                        n_passing+=1
+                if n_passing < 1 : continue
+                N_fired = len(self.map2Dict(aHit,'GetAllSignals'))
+                if N_fired < 6 :
+                    if n_passing >1 : N_noisy+=1
+                    continue
+                if system == 2 and acceptance['US']: 
                     bar_key = "USplane"+str(plane)+"horizontalbar"+str(bar)
                     self.hist["qdc_"+self.cases[n_passing]+bar_key].Fill(sumSignal['Sum'])
-                if system == 1:
+                if system == 1 and acceptance['Veto']:
                     bar_key = "Vetoplane"+str(plane)+"horizontalbar"+str(bar)
                     self.hist["qdc_"+self.cases[n_passing]+bar_key].Fill(sumSignal['Sum'])
+#            for aHit in self.eventTree.Digi_ScifiHits:
+#                print("hit time: " aHit.GetTime())
+        
 
 
-#            if self.eventTree.EventHeader.isB2noB1():print("bingooo")
-        if self.f.Get('rawConv'):  ut.writeHists(self.hist,"histograms_mu3_qdc"+str(self.options.runNumber)+".root")
-        else :  ut.writeHists(self.hist,"histograms_mu3_qdc_MC.root")
-        for aHist in self.hist:
-            print(aHist,self.hist[aHist].GetEntries())
+            thetas=[]
+            for p in range(2):
+                keys = list(reco_2dTracks['scifi'][p])
+                pairs={}
+                for i in range(len(reco_2dTracks['scifi'][p])-1):
+                    for j in range(i+1,len(reco_2dTracks['scifi'][p])):
+                        tr_1,tr_2 = keys[i],keys[j]
+                        rc = tr_1.Fit("pol1","QS")
+                        line1 = tr_1.GetFunction("pol1")
+                        rc = tr_2.Fit("pol1","QS")
+                        line2 = tr_2.GetFunction("pol1")
+                        X1,X2=line1.Eval(280),line2.Eval(280)
+                        slope1,slope2=line1.GetParameter(1),line2.GetParameter(1)
+                        theta=self.angle_between_lines(slope1, slope2)
+                        d=abs(X1-X2)
+                        if d not in pairs :
+                            pairs[d]=theta
+                sorted_dict = dict(sorted(pairs.items()))
+                first_key = next(iter(sorted_dict))
+                last_key = next(reversed(sorted_dict))
+                dmax["data_"+str(p)]=np.append(dmax["data_"+str(p)],last_key)
+                dmin["data_"+str(p)]=np.append(dmin["data_"+str(p)],first_key)
+                print(last_key,first_key,n)
+#                    self.hist["dmax_vs_dmin_"+str(p)].Fill(first_key,last_key)
+                dmin_dmax_ratio = first_key/last_key
+                self.dmax_vs_dmin['data_histo_dmax_vs_dmin_'+str(p)].Fill(first_key,last_key)
+                self.hist[f'data_dmin_dmax_ratio_{p}'].Fill(dmin_dmax_ratio)
+
+            if self.eventTree.EventHeader.isB2noB1():print("bingooo", self.eventTree.GetReadEvent(),self.eventTree.Event_Type.GetValue("scifi"),self.eventTree.Event_Type.GetValue("ds"))
+        ut.writeHists(self.hist,"histograms_mu3_qdc"+str(self.options.runNumber)+".root")
+        ana_file = ROOT.TFile("histograms_mu3_qdc"+str(self.options.runNumber)+".root","UPDATE")
+        ana_file.cd()
+        for p in range(2):
+            graph_name='data_dmax_vs_dmin_'+str(p)
+            self.gr[graph_name]=ROOT.TGraph(len(dmax["data_"+str(p)]),dmin["data_"+str(p)],dmax["data_"+str(p)])        
+        for p in range(2):
+            graph_name='data_dmax_vs_dmin_'+str(p)
+            self.gr[graph_name].Write(graph_name)
+            self.dmax_vs_dmin['data_histo_dmax_vs_dmin_'+str(p)].Write('data_histo_dmax_vs_dmin_'+str(p))
+
+        ana_file.Close()
+ 
+
+
+
+    def angle_between_lines(self,slope1, slope2):
+        if slope1 == slope2:
+            return 0.0  # The lines are parallel
+        # Calculate the tangent of the angle between the lines
+        tan_theta = abs((slope2 - slope1) / (1 + slope1 * slope2))
+    
+        # Convert the tangent to an angle in degrees
+        angle = ROOT.TMath.ATan(tan_theta) #* (180 / ROOT.TMath.Pi())
+    
+        return angle
+
+
+
+
 
     def map2Dict(self,aHit,T='GetAllSignals',mask=True):
         if T=="SumOfSignals":
@@ -282,13 +378,11 @@ class MuonTridentAnalysis:
         x_det = [x_start,x_end]
         y_det = [y_start,y_end]
         z_mid = (A[2]+B[2])/2
-#        x, y = self.extrapolate(theTrack,z_mid)
+        ex = theTrack.Eval(z_mid)
         if track_projection == 1 :
-            x = theTrack.Eval(z_mid)
-            reaching = (min(x_det) <= x and x <= max(x_det))
+            reaching = (min(x_det) < ex and ex < max(x_det))
         if track_projection == 0 :
-            y = theTrack.Eval(z_mid)
-            reaching = (min(y_det) <= y and y <= max(y_det))
+            reaching = (min(y_det) < ex and ex < max(y_det))
         return reaching
 
     def is_UShit_isolated(self,theHit):
@@ -303,9 +397,3 @@ class MuonTridentAnalysis:
             if (aHit.GetDetectorID()%10000)//1000 == the_plane:
                 if abs(the_bar-aHit.GetDetectorID()%1000)==1:isolated = False
         return isolated
-            
-
-
- 
-
-
