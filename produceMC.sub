@@ -1,0 +1,13 @@
+executable  = produceMC.sh
+arguments   = $(ProcId)
+output      = output/onur.$(ClusterId).$(ProcId).out
+error       = error/onur.$(ClusterId).$(ProcId).err
+log         = log/onur.log
++JobFlavour = "workday"
+Transfer_output_files = ""
+max_retries             = 3
+#queue 100
+#queue file from seq 200 299 |
+#queue file from seq 0 999 |
+queue 4000
+#queue file from tmp_list.txt
