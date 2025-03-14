@@ -9,13 +9,19 @@ from array import array
 from ROOT import TTree
 import numpy as np
 import json
-
+import cppyy
+from scipy.optimize import fsolve
+from scipy.optimize import minimize
+from itertools import combinations
+from Tools import Tools
+import BaseCut as BaseCut
 
 from argparse import ArgumentParser
 parser = ArgumentParser()
 parser.add_argument("-f", "--inputFile", dest="inputFile", help="input file data and MC",default="",required=False)
-parser.add_argument("-g", "--geoFile", dest="geoFile", help="geofile", default=os.environ["EOSSHIP"]+"/eos/experiment/sndlhc/convertedData/physics/2022/geofile_sndlhc_TI18_V0_2022.root")
+parser.add_argument("-g", "--geoFile", dest="geoFile", help="geofile", default=os.environ["EOSSHIP"]+"/eos/experiment/sndlhc/users/odurhan/MuonicTridentMC/geofile_full.Ntuple-TGeant4_boost100.0.root")
 parser.add_argument("-j","--jobID",dest="jobID",help="job ID",default=0,required=False)
+parser.add_argument("-t","--trackType",dest="trackType",help="scifi of ds",default="scifi",required=True)
 options = parser.parse_args()
 
 
@@ -90,7 +96,7 @@ f_name = options.inputFile
 print(f_name,"is the file" )
 
 
-geo_file = "~/geofile_full.Ntuple-TGeant4_boost1000.0.root"
+geo_file =options.geoFile
 
 geo = SndlhcGeo.GeoInterface(geo_file)
 lsOfGlobals = ROOT.gROOT.GetListOfGlobals()
@@ -177,209 +183,367 @@ class MuonTridentEngine:
         self.Value = ROOT.std.vector('float')() 
         self.hist={}
         self.trident_type = {'MuonToMuonPair':0,'GammaToMuonPair':0,'PositronToMuonPair':0}
-        ut.bookHist(self.hist,"stage1_pass"," ",25,0,2000.)
-        ut.bookHist(self.hist,"stage1_all"," ",25,0,2000.)
-        ut.bookHist(self.hist,"stage2_pass"," ",10,0,1.)
-        ut.bookHist(self.hist,"stage2_total"," ",10,0,1.)
-        ut.bookHist(self.hist,"xz","",330,-6000.,600.,200,-200.,200.)
-        ut.bookHist(self.hist,"yz","",330,-6000.,600.,200,-200.,200.)
-        ut.bookHist(self.hist,"xy","",200,-300,300,200,-300,300)
-        ut.bookHist(self.hist,"z_int","",640,-6000,400)
+        ut.bookHist(self.hist,"xz","",200,-7500.,2500.,200,-100.,100.)
+        ut.bookHist(self.hist,"yz","",200,-7500.,2500.,200, -100.,100.)
+        ut.bookHist(self.hist,"xy","",200,-100,100,200,-100,100)
         for o in range(2):
             for s in range(1,6):
-                ut.bookHist(self.hist,"n_clu_so"+str(s*10+o)+"_MC","cluster density "+str(s*10+o),40,0,40)
+                ut.bookHist(self.hist,"n_clu_so"+str(s*10+o)+"_MC","scifi hit density "+ str(s*10+o),40,0,40)
+            for s in range(1,5):
+                ut.bookHist(self.hist,'n_hitsDS_so'+str(s*10+o)+"_MC",'ds hit density' + str(s*10+o),10,0,10)
         self.p1, self.p2 = ROOT.TLorentzVector(), ROOT.TLorentzVector()
         for key in self.trident_type:
             ut.bookHist(self.hist,"inv_"+key,"",25,0.,1.)
-            ut.bookHist(self.hist,"daughters_mom_"+key,"",25,0,2000.)  
-            if key == 'GammaToMuonPair':
-                ut.bookHist(self.hist,key+'_theta','',100,0.,1.)
-            else : ut.bookHist(self.hist,key+'_theta','',100,0.,0.05)
-            ut.bookHist(self.hist,"coplanarity_"+key," ",100,0.,0.05)
-            ut.bookHist(self.hist,"xz_dist_"+key,"",25,0,25)
-            ut.bookHist(self.hist,"yz_dist_"+key,"",25,0,25)
-        ut.bookHist(self.hist,"theta_xz","theta xz",100,0,0.4)
-        ut.bookHist(self.hist,"theta_yz","theta yz",100,0,0.4)
-        ut.bookHist(self.hist,"theta_xz_yz","theta xz vs yz",100,0.,0.5)
-        for p in range(2):
-            ut.bookHist(self.hist,"chi2ndof"+str(p),"chi2 ndof",100,0,0.3) 
-        ut.bookHist(self.hist,"dz_reco"," reco z res", 100,-1000,1000)
-        self.systemAndPlanes   = {2:5}
-        self.systemAndBars     = {2:10}
-        self.systemAndChannels = {2:16}
-        self.sdict             = {2:'US'}
         self.cases = {1:"single",2:"dimuon",3:"threemuon"}
-        for system in self.systemAndPlanes:
-            for plane in range(self.systemAndPlanes[system]):
-                if system == 2:
-                    ut.bookHist(self.hist,"pass-Exy-"+str(plane)," ",140,-46,-30.,120,35,52)
-                    ut.bookHist(self.hist,"total-Exy-"+str(plane)," ",140,-46,-30.,120,35,52)
-                    ut.bookHist(self.hist,"residuals-yEx"+str(plane),"Residuals plane"+str(plane), 100, 35,52, 100,-30.,30.)
-                    ut.bookHist(self.hist,"residuals-xEx"+str(plane),"Residuals plane"+str(plane), 100, -46,-30, 100,-30.,30.)
-                    self.hist["residuals-yEx"+str(plane)].GetXaxis().SetTitle("yEx [cm]")
-                    self.hist["residuals-yEx"+str(plane)].GetYaxis().SetTitle("res_y [cm]")
-                    self.hist["residuals-xEx"+str(plane)].GetXaxis().SetTitle("xEx [cm]")
-                    self.hist["residuals-xEx"+str(plane)].GetYaxis().SetTitle("res_y [cm]")
-                    ut.bookHist(self.hist,"nbrHits-"+str(plane)," nbr of hits ",10,0.,10.)
-                    self.hist["nbrHits-"+str(plane)].GetXaxis().SetTitle("nbr of hits")
-                orientation = self.systemAndOrientation(system,plane)
-                for bar in range(self.systemAndBars[system]):
-                    bar_key = self.sdict[system]+"plane"+str(plane)+orientation+"bar"+str(bar)
-                    if system == 2:
-                        for key in range(1,4):
-                            ut.bookHist(self.hist, "qdc_"+self.cases[key]+bar_key," ",30,0.,300)
-                            print("qdc_"+self.cases[key]+bar_key)
-       
+        self.materials = {1:'Rock',2:'Concrete',3:'air'}
+        ut.bookHist(self.hist,'charge','',29,-14,14)
+        dmin_bins = [0,1.,2.5,4.5,7.5,11.5,16.5,25.]  # Variable bin widths in Y
+        # Number of bins = (number of edges - 1)
+        n_dmin_bins = len(dmin_bins) - 1
+        dmin_bins_array = ROOT.std.vector('double')(dmin_bins)
+        self.dmax_vs_dmin={}
+        self.z_ranges=[7150,5000,3000,1000,0]
+        self.E_ranges=[30,500,1000,3000,5000]
+        for key in self.trident_type:
+            ut.bookHist(self.hist,'z_total'+key,'',20,-7500.,280.)
+            ut.bookHist(self.hist,'z_pass'+key,'',20,-7500.,280)
+            ut.bookHist(self.hist,'z_total_acc'+key,'',20,-7500,500)
+            ut.bookHist(self.hist,'z_pass_acc'+key,'',20,-7500,500)
+            ut.bookHist(self.hist,'E_pass_acc'+key,'',20,0,5000)
+            ut.bookHist(self.hist,'E_total_acc'+key,'',20,0,5000)
+            ut.bookHist(self.hist,'E_total'+key,'',20,0,5000)
+            ut.bookHist(self.hist,'E_pass'+key,'',20,0,5000)
+            ut.bookHist(self.hist,'material_'+key,'',3,0,3)
+            ut.bookHist(self.hist,"E_daughters_"+key,'',100,0,3000)
+            ut.bookHist(self.hist,f"theta_for_ship_{key}","",100,0,100)
+            if key =='MuonToMuonPair': 
+                max_mass = 1.
+            else :
+                max_mass = 10.
+            ut.bookHist(self.hist,f"inv_mass_for_ship_{key}","",100,0,max_mass)
 
-        self.tools = Tools()
-        self.cuts = []
-        for cut in BaseCut.__subclasses__():
-            print("cuts are", cut)
-            self.cuts.append(cut())
+            for b in range(1,4):
+                self.hist['material_'+key].GetXaxis().SetBinLabel(b,self.materials[b])
+            if key!='MuonToMuonPair':
+                ut.bookHist(self.hist,'theta_total'+key,'',10,0,50)
+                ut.bookHist(self.hist,'theta_pass' +key,'',10,0,50)
+                ut.bookHist(self.hist,'E_vs_theta_pass'+key,'',25,0,50,25,0,5000)
+                ut.bookHist(self.hist,'E_vs_theta_total'+key,'',25,0,50,25,0,5000)
+                ut.bookHist(self.hist,'z_vs_theta_pass'+key,'',25,0,25,25,-8000,0)
+                ut.bookHist(self.hist,'z_vs_theta_total'+key,'',25,0,25,25,-8000,0)
+            else:
+                ut.bookHist(self.hist,'theta_total'+key,'',10,0,5)
+                ut.bookHist(self.hist,'theta_pass'+key,'',10,0,5)
+                ut.bookHist(self.hist,'E_vs_theta_pass'+key,'',50,0,5,50,0,5000)
+                ut.bookHist(self.hist,'E_vs_theta_total'+key,'',50,0,5,50,0,5000)
+                ut.bookHist(self.hist,'z_vs_theta_pass'+key, '',50,0,5,50,-8000,0)
+                ut.bookHist(self.hist,'z_vs_theta_total'+key,'',50,0,5,50,-8000,0)
+            for p in range(2):
+                if key == 'MuonToMuonPair': 
+                    nbin=25
+                else : nbin = 25
+                for i in range(len(self.z_ranges)-1):
+                    self.dmax_vs_dmin[key+'_histo_dmax_vs_dmin_'+str(p)+"_"+str(self.z_ranges[i])+"_"+str(self.z_ranges[i+1])] = ROOT.TH2D(key+"h2"+str(p)+"_"+str(self.z_ranges[i])+"_"+str(self.z_ranges[i+1]), "2D Histogram with Variable Y Binning;X axis;Y axis",n_dmin_bins,dmin_bins_array.data(),nbin,0,25.)
+                    self.dmax_vs_dmin[key+'_histo_dmax_vs_dmin_'+str(p)+"_"+str(self.E_ranges[i])+"_"+str(self.E_ranges[i+1])] = ROOT.TH2D(key+"h2"+str(p)+"_"+str(self.E_ranges[i])+"_"+str(self.E_ranges[i+1]), "2D Histogram with Variable Y Binning;X axis;Y axis",n_dmin_bins,dmin_bins_array.data(),nbin,0,25.)
+                    ut.bookHist(self.hist,f'{key}_dmin_dmax_ratio_{p}_{self.z_ranges[i]}_{self.z_ranges[i+1]}',"dmin to dmax ratio",60,0,0.6)
+                    ut.bookHist(self.hist,f'{key}_dmin_dmax_ratio_{p}_{self.E_ranges[i]}_{self.E_ranges[i+1]}',"dmin to dmax ratio",30,0,0.6)
+ 
+        ut.bookHist(self.hist,"E_loss","",50,0,20)
 
-#    check_target = lambda aVx : all(b[0] < p < b[1] for p, b in zip(aVx, [(-47.7758,-5.5467),(13.0335 ,55.2793),(289.3743,353.3114)]))
+        
+        self.scifi_hit_density_cut= BaseCut.ScifiHitDensityCut(eventTree,geo)
+        self.scifi_fiducial_cut = BaseCut.FiducialCut()
+        self.tools = Tools(trackTask,geo)        
 
-    def efficiency(self):
+    def efficiency(self,trackType):
         proc_names = ['MuonToMuonPair','GammaToMuonPair','PositronToMuonPair']
         weighted = {}
         unweighted = {}
         cases = {1:"single",2:"dimuon",3:"threemuon"}
         for proc in proc_names:
-            weighted[proc]={'norm':0,'inAcceptance':0,'with_original_muon':0,'hits_exist_in_all':0,'recoble':0,'3/3':0,'2/3':0,'2/3':0,'2/2':0,'sparse':0}
-            unweighted[proc]={'norm':0,'inAcceptance':0,'with_original_muon':0,'hits_exist_in_all':0,'recoble':0,'3/3':0,'2/3':0,'2/3':0,'2/2':0,'sparse':0}
-        p1, p2 = ROOT.TLorentzVector(), ROOT.TLorentzVector()
-        check_target = lambda aVertex : all(b[0] < p < b[1] for p, b in zip(aVertex, [(-47.7758,-5.5467),(13.0335 ,55.2793),(-1000000,288.)])) ###whole wall : 353.3114
+            weighted[proc]={'norm':0,'inAcceptance':0,'with_original_muon':0,'hits_exist_in_all':0,'recoble':0,'3/3':0,'2/3':0,'2/3':0,'2/2':0,'sparse':0, 'fiducial':0}
+            unweighted[proc]={'norm':0,'inAcceptance':0,'with_original_muon':0,'hits_exist_in_all':0,'recoble':0,'3/3':0,'2/3':0,'2/3':0,'2/2':0,'sparse':0,'fiducial':0}
         print("Total nbr of events in this file, ",eventTree.GetEntries())
+        A,B = ROOT.TVector3(),ROOT.TVector3()
+        multiple_entries = 0
+        single_muon_tracks = 0
+        not_convergent = 0
+        events_with_reco_tracks=[]
         for n in range(eventTree.GetEntries()):
-            if n%1000==0: print('event at %d' % n)
+            if n%10000==0: print('event at %d' % n)
             eventTree.GetEvent(n)
-            vertices = self.vertex_array(eventTree.MCTrack) 
+            vertices = self.vertex_array(eventTree.MCTrack)
             w = eventTree.MCTrack[0].GetWeight()
-            h2p = eventTree.Digi_ScifiHits2MCPoints.First()
-            multiple_entries = 0
-            clusters = self.tools.scifi_clusters()
+            """
+            for single muon tracks
+            """
+            for aTrack in Reco_MuonTracks: aTrack.Delete()
+            Reco_MuonTracks.Clear("C")
+            rc = trackTask.ExecuteTask("Scifi")
+            if not Reco_MuonTracks.GetEntries()==1: 
+                continue
+            theTrack = Reco_MuonTracks[0]
+            if not hasattr(theTrack,"getFittedState"):continue
+            status = theTrack.getFitStatus()
+            if not status.isFitConverged() :
+                not_convergent+=w
+                continue
+            zPos = self.tools.getAverageZpositions()
+            testPlane=51
+            z = zPos['Scifi'][testPlane]
+            parallelToZ = ROOT.TVector3(0,0,1.)
+            rep     = ROOT.genfit.RKTrackRep(13)
+            state  = ROOT.genfit.StateOnPlane(rep)
+            # find closest track state
+            mClose = 0
+            mZmin = 999999.
+            for m in range(0,theTrack.getNumPointsWithMeasurement()):
+                st   = theTrack.getFittedState(m)
+                Pos = st.getPos()
+                if abs(z-Pos.z())<mZmin:
+                    mZmin = abs(z-Pos.z())
+                    mClose = m
+            if mZmin>10000:
+                print("something wrong here with measurements",mClose,mZmin,theTrack.getNumPointsWithMeasurement())
+                continue
+            fstate =  theTrack.getFittedState(mClose)
+            pos,mom = fstate.getPos(),fstate.getMom()
+            rep.setPosMom(state,pos,mom)
+            NewPosition = ROOT.TVector3(0., 0., z)   # assumes that plane in global coordinates is perpendicular to z-axis, which is not true for TI18 geometry.
+            rep.extrapolateToPlane(state, NewPosition, parallelToZ )
+            pos = state.getPos()
+            xEx,yEx = pos.x(),pos.y()
+            Simona_vol = True
+            if yEx<=18. or yEx >= 49:
+                Simona_vol = False
+            if xEx<=-42 or xEx>=-11:
+                Simona_vol = False
+            if Simona_vol: 
+                single_muon_tracks+=w
+            events_with_reco_tracks.append(n)
+            continue
+            if trackType == "scifi":
+                h2p = eventTree.Digi_ScifiHits2MCPoints.First()
+            else :
+                h2p = eventTree.Digi_MuFilterHits2MCPoints.First()
+            if trackType == "scifi":
+                clusters =self.tools.scifi_clusters()
+            recoble_event = False
             tracks_counted = False
-            if len(vertices)>1 : print("more than one vertices")
+            n3D = [0,0]
+            if len(vertices)>1:multiple_entries+=w
+
             for aVx in vertices:
-#                if not check_target(aVx.get_vertex_pos()) : continue
-                self.hist["xz"].Fill(aVx.get_vertex_pos()[2],aVx.get_vertex_pos()[0])
-                self.hist["yz"].Fill(aVx.get_vertex_pos()[2],aVx.get_vertex_pos()[1])
-                self.hist["xy"].Fill(aVx.get_vertex_pos()[0],aVx.get_vertex_pos()[1])
-                self.hist["z_int"].Fill(aVx.get_vertex_pos()[2])
-#                self.hist["inv_"+aVx.get_trident_type()].Fill()
-#                self.hist["daughters_mom_"+aVx.get_triedent_type()].Fill()
-#                self.hist[aVx.get_trident_type()+"_theta"].Fill()
-                if aVx.get_vertex_pos()[2]>280. : continue 
+                x,y,z =  aVx.get_vertex_pos()[0], aVx.get_vertex_pos()[1],aVx.get_vertex_pos()[2]
+                """
+                for ship
+                if eventTree.MCTrack[0].GetEnergy()>0.:
+                    p1,p2 = ROOT.TLorentzVector(),ROOT.TLorentzVector()
+                    theta_ship = self.calculate_angle(aVx.get_daughters()[0],aVx.get_daughters()[1])
+                    self.hist[f"theta_for_ship_{aVx.get_trident_type()}"].Fill(theta_ship*1E3)
+                    found = False
+                    for muon in aVx.get_daughters():
+                        muon.Get4Momentum(p1)
+                        m =105.66/1E3
+                        for p in eventTree.ScifiPoint:
+                            if p.GetTrackID()<0:continue
+                            px = p.GetPx()
+                            py = p.GetPy()
+                            pz = p.GetPz()
+                            E_f = (px**2 + py**2 + pz**2 + m**2)**0.5
+                            if eventTree.MCTrack[p.GetTrackID()] == aVx.get_mother():
+                                p3 = ROOT.TLorentzVector(px, py, pz, E_f)
+                                found = True
+                            if found : break
+
+                    mass=self.invariant_mass(p1,p2,p3)
+                    self.hist[f"inv_mass_for_ship_{aVx.get_trident_type()}"].Fill(mass)
+                    print(mass, aVx.get_trident_type(),aVx.get_mother().GetEnergy())
+                """    
+
+                if z>280:continue
+                if aVx.get_trident_type() == 'MuonToMuonPair':
+                    self.hist["xy"].Fill(x,y,w)
+                    self.hist["yz"].Fill(z,y,w)
+                    self.hist["xz"].Fill(z,x,w)
                 daughters = aVx.get_daughters()
-                multiple_entries+=1
+                for daughter in daughters:
+                    self.hist['E_daughters_'+aVx.get_trident_type()].Fill(daughter.GetEnergy(),w)
                 unweighted[aVx.get_trident_type()]['norm']+=1
                 weighted[aVx.get_trident_type()]['norm']+=w
-                if len(daughters)!=2 : continue
-                three_clu = self.three_clusters(h2p, daughters[0], daughters[1], clusters)
-                if self.check_three_accepted_clusterwise(three_clu):
-#                if self.check_three_accepted(h2p,daughters[0],daughters[1]):
-                    unweighted[aVx.get_trident_type()]['inAcceptance']+=1
-                    weighted[aVx.get_trident_type()]['inAcceptance']+=w
-                    if self.with_original_muon(three_clu):
-                        unweighted[aVx.get_trident_type()]['with_original_muon']+=1
-                        weighted[aVx.get_trident_type()]['with_original_muon']+=w
-                    else : continue
-                    if self.check_all_planes(clusters): #self.check_planes_with_hits() :#self.check_all_planes(clusters):
-                        unweighted[aVx.get_trident_type()]['hits_exist_in_all']+=1
-                        weighted[aVx.get_trident_type()]['hits_exist_in_all']+=w 
-                        if self.recoble(three_clu):
-                            unweighted[aVx.get_trident_type()]['recoble']+=1
-                            weighted[aVx.get_trident_type()]['recoble']+=w 
-                            if tracks_counted : continue
-#                            trackTask.multipleTrackCandidates(nMaxCl=8,dGap=0.2,dMax=0.8,dMax3=0.8,ovMax=1,doublet=True,debug=False)
-                            trackTask.multipleTrackCandidates2(geo.modules['MuFilter'],eventTree.Digi_MuFilterHits)
-                            n3D = [0,0]
-                            for p in range(2):
-                                for trackId in trackTask.multipleTrackStore['trackCand'][p]:
-                                    if trackId < 10000 and not trackTask.multipleTrackStore['doublet']: continue
-                                    if trackId in trackTask.multipleTrackStore['cloneCand'][p]: continue
-                                    n3D[p]+=1
-############### DONT FORGET ##################3
-                            print(n3D, eventTree.GetReadEvent())
-                            continue
-                            if  n3D == [3,3] :
-                                unweighted[aVx.get_trident_type()]['3/3']+=1
-                                weighted[aVx.get_trident_type()]['3/3']+=w
-                            if  n3D == [2,3] or n3D == [3,2]:
-                                unweighted[aVx.get_trident_type()]['2/3']+=1
-                                weighted[aVx.get_trident_type()]['2/3']+=w
-                            if n3D == [2,2]:
-                                unweighted[aVx.get_trident_type()]['2/2']+=1
-                                weighted[aVx.get_trident_type()]['2/2']+=w
-#                                print("a weird event detected at event ", n, "the nbr of interactions in the event :", len( vertices))
-                            tracks = {0:[],1:[]}
-                            if n3D == [3,3]:
-                                sparse = {0:True, 1:True}
-                                for p in range(2):
-                                    keys = list(trackTask.multipleTrackStore['trackCand'][p].keys())
-                                    for trackId in trackTask.multipleTrackStore['trackCand'][p]:
-                                        if trackId < 100000 and not trackTask.multipleTrackStore['doublet']: continue
-                                        if trackId in trackTask.multipleTrackStore['cloneCand'][p]: continue
-                                        sparse[p]=self.sparse_event(clusters,trackTask.multipleTrackStore['trackCand'][p][trackId],p,w)
-                                        rc=trackTask.multipleTrackStore['trackCand'][p][trackId].Fit("pol1","QS")
-                                        theta = trackTask.multipleTrackStore['trackCand'][p][trackId].GetFunction("pol1").GetParameter(1)
-                                        tracks[p].append(trackId)
-                                        if p == 0 :
-                                            self.hist["theta_xz"].Fill(theta)
-                                        if p == 1:
-                                            self.hist["theta_yz"].Fill(theta)
-                                        ndof=trackTask.multipleTrackStore['trackCand'][p][trackId].GetFunction("pol1").GetNDF()
-                                        chi2=trackTask.multipleTrackStore['trackCand'][p][trackId].GetFunction("pol1").GetChisquare() 
-                                        self.hist["chi2ndof"+str(p)].Fill(chi2/ndof,w*40*2.58)
-#                                    print(f"The vertex position is: {vertex} at projection {p} true is vertex {true_pos}")
-                                if sparse[0] or sparse[1] : 
-                                    unweighted[aVx.get_trident_type()]['sparse']+=1
-                                    weighted[aVx.get_trident_type()]['sparse']+=w
-                                    distances = {0:[],1:[]}
-                                    for p in range(2):
-                                        keys = list(trackTask.multipleTrackStore['trackCand'][p].keys())
-                                        for i in range(len(trackTask.multipleTrackStore['trackCand'][p])-1):
-                                            for j in range(i+1,len(trackTask.multipleTrackStore['trackCand'][p])):
-                                                tr_1,tr_2 = keys[i],keys[j]
-                                                if tr_1 < 100000 and not trackTask.multipleTrackStore['doublet']: continue
-                                                if tr_1 in trackTask.multipleTrackStore['cloneCand'][p]: continue
-                                                if tr_2 < 100000 and not trackTask.multipleTrackStore['doublet']: continue
-                                                if tr_2 in trackTask.multipleTrackStore['cloneCand'][p]: continue
-                                                rc=trackTask.multipleTrackStore['trackCand'][p][tr_1].Fit("pol1","QS")
-                                                pos1 = trackTask.multipleTrackStore['trackCand'][p][tr_1].GetFunction("pol1").GetParameter(0)
-                                                rc = trackTask.multipleTrackStore['trackCand'][p][tr_2].Fit("pol1","QS")
-                                                pos2 = trackTask.multipleTrackStore['trackCand'][p][tr_2].GetFunction("pol1").GetParameter(0)
-                                                dist=abs(pos1-pos2)
-                                                distances[p].append(dist)
-                                        if p == 0: self.hist["xz_dist_"+aVx.get_trident_type()].Fill(max(distances[p]),w*18.959999999999997)
-                                        if p == 1: self.hist["yz_dist_"+aVx.get_trident_type()].Fill(max(distances[p]),w*18.959999999999997)
+                if len(daughters)!=2 : 
+                    continue
+                for p in eventTree.ScifiPoint:
+                    if p.GetTrackID()<0:continue
+                    mc_track=eventTree.MCTrack[p.GetTrackID()]
+#                    if not mc_track.GetMotherId()== 0: continue
+                    if mc_track in daughters and mc_track.GetStartZ()>-1100. and mc_track.GetStartZ()<-999.:
+                        px = p.GetPx()
+                        py = p.GetPy()
+                        pz = p.GetPz()    
+                        m=105.66/1000
+                        E_f = (px**2 + py**2 + pz**2 + m**2)**0.5
+                        self.hist["E_loss"].Fill(mc_track.GetEnergy()-E_f)
+                if trackType == "scifi":
+                    three_clu = self.three_clusters(h2p, daughters[0], daughters[1], clusters,trackType)
+                else :
+                    three_clu = self.three_clusters(h2p,daughters[0],daughters[1],eventTree.Digi_MuFilterHits,trackType)
+                inAcc = self.check_three_accepted(three_clu)
+                self.hist['z_total_acc'+aVx.get_trident_type()].Fill(aVx.get_daughters()[0].GetStartZ(),w)
+                self.hist['E_total_acc'+aVx.get_trident_type()].Fill(aVx.get_mother().GetEnergy(),w)
+                if not inAcc:
+                    continue
+                unweighted[aVx.get_trident_type()]['inAcceptance']+=1
+                weighted[aVx.get_trident_type()]['inAcceptance']+=w
+                if self.with_original_muon(three_clu):
+                    unweighted[aVx.get_trident_type()]['with_original_muon']+=1
+                    weighted[aVx.get_trident_type()]['with_original_muon']+=w
+                if trackType == "scifi": 
+                    all_planes = self.check_all_planes(clusters,trackType)
+                else : 
+                    all_planes = self.check_all_planes(eventTree.Digi_MuFilterHits,trackType)
+                if not all_planes: 
+                    continue
+                unweighted[aVx.get_trident_type()]['hits_exist_in_all']+=1
+                weighted[aVx.get_trident_type()]['hits_exist_in_all']+=w 
+                if trackType== "scifi":
+                    if self.recoble(three_clu): recoble_event = True
+                else :
+                    if self.recoble_DS(three_clu): recoble_event = True        
+                if not recoble_event: continue
+                self.hist['z_pass_acc'+aVx.get_trident_type()].Fill(aVx.get_daughters()[0].GetStartZ(),w)
+                self.hist['E_pass_acc'+aVx.get_trident_type()].Fill(aVx.get_mother().GetEnergy(),w)
+                unweighted[aVx.get_trident_type()]['recoble']+=1
+                weighted[aVx.get_trident_type()]['recoble']+=w 
+                if tracks_counted : continue   ## count tracks once for all vertices 
+                opening_angle = self.calculate_angle(aVx.get_daughters()[0],aVx.get_daughters()[1])
+                self.hist['E_total'+aVx.get_trident_type()].Fill(aVx.get_mother().GetEnergy(),w)
+                self.hist['z_total'+aVx.get_trident_type()].Fill(aVx.get_daughters()[0].GetStartZ(),w)
+                opening_angle = self.calculate_angle(aVx.get_daughters()[0],aVx.get_daughters()[1])
+                self.hist['theta_total'+aVx.get_trident_type()].Fill(opening_angle*1000,w)
+                self.hist['E_vs_theta_total'+aVx.get_trident_type()].Fill(opening_angle*1000,eventTree.MCTrack[aVx.get_daughters()[0].GetMotherId()].GetEnergy(),w)   
+                self.hist['z_vs_theta_total'+aVx.get_trident_type()].Fill(opening_angle*1000,aVx.get_daughters()[0].GetStartZ(),w)
+                if trackType == "scifi":
+                    trackTask.multipleTrackCandidates(nMaxCl=8,dGap=0.2,dMax=0.8,dMax3=0.8,ovMax=1,doublet=True,debug=False)
+                else:
+                    trackTask.multipleTrackCandidates2(geo.modules['MuFilter'],eventTree.Digi_MuFilterHits, debug = False)
+                reco_2dTracks = {"scifi":{0:[],1:[]}, "ds" :{0:[],1:[]}}
+                for p in range(2):
+                    for trackId in trackTask.multipleTrackStore['trackCand'][p]:
+                        if trackId in trackTask.multipleTrackStore['cloneCand'][p]: continue
+                        n3D[p]+=1
+                        if trackType == "scifi":
+                            reco_2dTracks["scifi"][p].append(trackTask.multipleTrackStore['trackCand'][p][trackId])
+                        else :
+                            reco_2dTracks["ds"][p].append(trackTask.multipleTrackStore['trackCand'][p][trackId])
+                if n3D == [3,3] :
+                    unweighted[aVx.get_trident_type()]['3/3']+=1
+                    weighted[aVx.get_trident_type()]['3/3']+=w
+                if  n3D == [2,3] or n3D == [3,2]:
+                    unweighted[aVx.get_trident_type()]['2/3']+=1
+                    weighted[aVx.get_trident_type()]['2/3']+=w
+                if n3D == [2,2]:
+                    unweighted[aVx.get_trident_type()]['2/2']+=1
+                    weighted[aVx.get_trident_type()]['2/2']+=w
+                tracks_counted = True
+                if not n3D == [3,3]: continue ### now focus on 3-track events !        
+                if trackType == "scifi":
+                    sparse_event = self.scifi_hit_density_cut.pass_cut(reco_2dTracks)
+                    if not sparse_event:
+                        continue
+                    unweighted[aVx.get_trident_type()]['sparse']+=1
+                    weighted[aVx.get_trident_type()]['sparse']+=w
+                    scifi_fiducial = self.scifi_fiducial_cut.pass_cut(reco_2dTracks)
+                    if not scifi_fiducial :
+                        continue
+                    unweighted[aVx.get_trident_type()]['fiducial']+=1
+                    weighted[aVx.get_trident_type()]['fiducial']+=w 
+                    self.hist['E_pass'+aVx.get_trident_type()].Fill(eventTree.MCTrack[aVx.get_daughters()[0].GetMotherId()].GetEnergy(),w)
+                    self.hist['z_pass'+aVx.get_trident_type()].Fill(aVx.get_daughters()[0].GetStartZ(),w)
+                    opening_angle = self.calculate_angle(aVx.get_daughters()[0],aVx.get_daughters()[1])
+                    self.hist['theta_pass'+aVx.get_trident_type()].Fill(opening_angle*1000,w)
+                    self.hist['E_vs_theta_pass'+aVx.get_trident_type()].Fill(opening_angle*1000,eventTree.MCTrack[aVx.get_daughters()[0].GetMotherId()].GetEnergy(),w) 
+                    self.hist['z_vs_theta_pass'+aVx.get_trident_type()].Fill(opening_angle*1000,aVx.get_daughters()[0].GetStartZ(),w)
+                    self.hist['charge'].Fill(eventTree.MCTrack[0].GetPdgCode(),w)            
+                    thetas=[]
+                    distances = []
+                    dmins=[]
+                    dmax=[]
+                    for p in range(2):
+                        keys = list(reco_2dTracks['scifi'][p])
+                        pairs={}
+                        for i in range(len(reco_2dTracks['scifi'][p])-1):
+                            for j in range(i+1,len(reco_2dTracks['scifi'][p])):
+                                tr_1,tr_2 = keys[i],keys[j]
+                                rc = tr_1.Fit("pol1","QS")
+                                line1 = tr_1.GetFunction("pol1")
+                                rc = tr_2.Fit("pol1","QS")
+                                line2 = tr_2.GetFunction("pol1")
+                                X1,X2 = line1.Eval(300),line2.Eval(300)
+                                slope1,slope2=line1.GetParameter(1),line2.GetParameter(1)
+                                theta=self.angle_between_lines(slope1, slope2)
+                                d=abs(X1-X2)
+                                if d not in pairs :
+                                    pairs[d]=theta
+                        sorted_dict = dict(sorted(pairs.items()))
+                        first_key = next(iter(sorted_dict))
+                        last_key = next(reversed(sorted_dict))
+                        dmin_dmax_ratio = first_key/last_key
+                        dmins.append(first_key)
+                        dmax.append(last_key)
+                        for i in range(len(self.z_ranges)-1):
+                            if -self.z_ranges[i]<aVx.get_vertex_pos()[2] and -self.z_ranges[i+1]>aVx.get_vertex_pos()[2]:
+                                self.dmax_vs_dmin[f'{aVx.get_trident_type()}_histo_dmax_vs_dmin_{p}_{self.z_ranges[i]}_{self.z_ranges[i+1]}'].Fill(first_key,last_key,w)
+#                                self.hist[f'{aVx.get_trident_type()}_dmin_dmax_ratio_{p}_{self.z_ranges[i]}_{self.z_ranges[i+1]}'].Fill(dmin_dmax_ratio,w)
+                        for i in range(len(self.E_ranges)-1):
+                            if self.E_ranges[i]<aVx.get_mother().GetEnergy() and self.E_ranges[i+1]>aVx.get_mother().GetEnergy():
+                                self.dmax_vs_dmin[f'{aVx.get_trident_type()}_histo_dmax_vs_dmin_{p}_{self.E_ranges[i]}_{self.E_ranges[i+1]}'].Fill(first_key,last_key,w)
+#                                self.hist[f'{aVx.get_trident_type()}_dmin_dmax_ratio_{p}_{self.E_ranges[i]}_{self.E_ranges[i+1]}'].Fill(dmin_dmax_ratio,w)
  
-                            tracks_counted = True
-                            if len(vertices)>1 : continue
-                            for aHit in eventTree.Digi_MuFilterHits:
-                                detID = aHit.GetDetectorID()
-                                the_dict=self.map2Dict(eventTree.Digi_MuFilterHits2MCPoints.First(),detID)
-#                                print("the_dict = ",the_dict)
-                                n_3 = []
-                                for key in the_dict:
-                                    trackID = eventTree.MuFilterPoint[key].GetTrackID()
-                                    if abs(eventTree.MCTrack[trackID].GetPdgCode())==13:
-                                        n_3.append(trackID)
-                                if len(n_3)<1 or len(n_3)>3:continue
-                                system = aHit.GetSystem()
-                                if system != 2 :continue
-                                sumSignal = self.map2Dict_qdc(aHit,'SumOfSignals')
-                                plane  = (detID%10000)//1000
-                                bar = detID%1000
-                                bar_key = "USplane"+str(plane)+"horizontalbar"+str(bar)
-                                self.hist["qdc_"+cases[len(n_3)]+bar_key].Fill(sumSignal['Sum'])
+                        vx_x, vx_y, vx_z = daughters[0].GetStartX(),daughters[0].GetStartY(),daughters[0].GetStartZ()
+                        node = geo.sGeo.FindNode(vx_x,vx_y,vx_z)
+                        material_name = node.GetMedium().GetMaterial().GetName()
+                        if material_name == 'Rock' or material_name == 'MolasseRock':
+                            self.hist['material_'+aVx.get_trident_type()].Fill(0.5,w)
+                        elif material_name == 'Concrete':
+                            self.hist['material_'+aVx.get_trident_type()].Fill(1.5,w)
+                        elif material_name == 'air':
+                            self.hist['material_'+aVx.get_trident_type()].Fill(2.5,w)
+                        else:
+                            print('different material', material_name)
+                    dmin_dmax_ratio=ROOT.TMath.Sqrt(dmins[0]**2+dmins[1]**2)/ROOT.TMath.Sqrt(dmax[0]**2+dmax[1]**2)
+                    for i in range(len(self.z_ranges)-1):
+                        if -self.z_ranges[i]<aVx.get_vertex_pos()[2] and -self.z_ranges[i+1]>aVx.get_vertex_pos()[2]:
+                            self.hist[f'{aVx.get_trident_type()}_dmin_dmax_ratio_{p}_{self.z_ranges[i]}_{self.z_ranges[i+1]}'].Fill(dmin_dmax_ratio,w)
 
-
- 
-                                
+            continue
+            if len(vertices)>1 : continue
+            for aHit in eventTree.Digi_MuFilterHits:
+                system = aHit.GetSystem()
+                if system==3 :continue
+                detID = aHit.GetDetectorID()
+                the_dict=self.map2Dict(eventTree.Digi_MuFilterHits2MCPoints.First(),detID)
+                n_3 = []
+                for key in the_dict:
+                    trackID = eventTree.MuFilterPoint[key].GetTrackID()
+                    if abs(eventTree.MCTrack[trackID].GetPdgCode())==13:
+                        n_3.append(trackID)
+                if len(n_3)<1 or len(n_3)>3:continue
+                sumSignal = self.map2Dict_qdc(aHit,'SumOfSignals')
+                plane  = (detID%10000)//1000
+                bar = detID%1000
+                if system == 1 :
+                    bar_key = "Vetoplane"+str(plane)+"horizontalbar"+str(bar)
+                if system == 2:
+                    bar_key = "USplane"+str(plane)+"horizontalbar"+str(bar)
+#                self.hist["qdc_"+cases[len(n_3)]+bar_key].Fill(sumSignal['Sum'])
+                
         print("UNWEIGHTED ", unweighted)
         print("WEIGHTED: ", weighted)
-
+        print("Multple entries ", multiple_entries)
+        print("single muon tracks ", single_muon_tracks)
+        print("non-convergent tracks",not_convergent)
+        self.write_to_txt(events_with_reco_tracks)
         # Write dictionary to a file in JSON format
         with open('data_unweighted_'+str(options.jobID)+'.json', 'w') as json_file:
             json.dump(unweighted, json_file)
@@ -389,45 +553,119 @@ class MuonTridentEngine:
 #        with open('data'+str(options.jobID)+'.json', 'r') as json_file:
 #            loaded_dict = json.load(json_file)
 #            print(loaded_dict)
-        ut.writeHists(self.hist,"histos_newdigi"+str(options.jobID)+".root")
-        return True
-        if False :    
-##################### SKIP THE REST FOR THE MOMENT ###########################
-                theta = self.calculate_angle(daughters[0],daughters[1])
-                self.hist["stage2_total"].Fill(theta,w)
-                for cut in self.cuts:
-                    if cut.pass_cut():
-                        self.hist["stage1_pass"].Fill(eventTree.MCTrack[0].GetP(),w)
-                        self.hist["stage2_pass"].Fill(theta,w)
+        ut.writeHists(self.hist,"histos_newdigi"+str(options.jobID)+"_"+options.trackType+".root")
+        ana_file=ROOT.TFile("histos_newdigi"+str(options.jobID)+"_"+options.trackType+".root","UPDATE")
+        ana_file.cd()
+        """
+        for p in range(2):
+            for proc in proc_names:
+                graph_name=proc+'_dmax_vs_dmin_'+str(p)
+                self.gr[graph_name]=ROOT.TGraph(len(dmax[proc+"_"+str(p)]),dmin[proc+"_"+str(p)],dmax[proc+"_"+str(p)])
+        """
+        for p in range(2):
+            for proc in proc_names:
+#                graph_name=proc+'_dmax_vs_dmin_'+str(p)
+#                self.gr[graph_name].Write(graph_name)
+                for i in range(len(self.z_ranges)-1):
+                    self.dmax_vs_dmin[proc+"_histo_dmax_vs_dmin_"+str(p)+"_"+str(self.z_ranges[i])+"_"+str(self.z_ranges[i+1])].Write(proc+"_histo_dmax_vs_dmin_"+str(p)+"_"+str(self.z_ranges[i])+"_"+str(self.z_ranges[i+1]))
+                for i in range(len(self.E_ranges)-1):
+                    self.dmax_vs_dmin[proc+"_histo_dmax_vs_dmin_"+str(p)+"_"+str(self.E_ranges[i])+"_"+str(self.E_ranges[i+1])].Write(proc+"_histo_dmax_vs_dmin_"+str(p)+"_"+str(self.E_ranges[i])+"_"+str(self.E_ranges[i+1]))
+ 
+        ana_file.Close()
 
-                for p in eventTree.ScifiPoint:
-                    break
-                    if p.GetTrackID()==0 and p.GetZ()>aVx.get_vertex_pos()[2]:
-                        px_o, py_o, pz_o = p.GetPx(), p.GetPy(), p.GetPz()
-                        break
-                for p in eventTree.MuFilterPoint:
-                    break
-                    if p.GetTrackID()==0 and p.GetZ()<aVx.get_vertex_pos()[2]:
-                        px_ref, py_ref, pz_ref = p.GetPx(), p.GetPy(), p.GetPz()
-                        break
-#        ut.writeHists(self.hist, "efficiency-histos"+f_name[-11:])
-        return self.hist
+
+
+
+
+
+
+
+    def Q2(self,vertex):
+        """
+        mother = eventTree.MCTrack[vertex.get_daughters()[0].GetMotherId()]
+        P_i = ROOT.TLorentzVector()
+        mother.Get4Momentum(P_i)
+        m = 105.66/1000
+        for p in eventTree.ScifiPoint:
+            if p.GetTrackID()==0:
+                px = p.GetPx()
+                py = p.GetPy()
+                pz = p.GetPz()
+                E_f = (px**2 + py**2 + pz**2 + m**2)**0.5
+                break
+        P_f = ROOT.TLorentzVector(px, py, pz, E_f)
+        Q = P_i-P_f
+        Q2 = -Q.M2()
+        return Q.Energy()
+        return Q2
+        """
+        P1, P2 = ROOT.TLorentzVector(), ROOT.TLorentzVector()
+        vertex.get_daughters()[0].Get4Momentum(P1)
+        vertex.get_daughters()[1].Get4Momentum(P2)
+        Q = P1+P2
+        Q2 = Q.M2()
+        Q2 = Q.Energy()
+        return Q2
+
+    def calculate_opening_angles_projections(self,p_mu_plus, p_mu_minus):
+        """
+        Calculate the opening angles between muon pair in the xz and yz planes.
+    
+        Parameters:
+        p_mu_plus  -- Momentum vector of mu+ as a tuple (px, py, pz)
+        p_mu_minus -- Momentum vector of mu- as a tuple (px, py, pz)
+    
+        Returns:
+        theta_xz -- Opening angle in the xz plane (in radians)
+        theta_yz -- Opening angle in the yz plane (in radians)
+        """
+        # Extract components of the momentum vectors
+        p_plus_x, p_plus_y, p_plus_z = p_mu_plus
+        p_minus_x, p_minus_y, p_minus_z = p_mu_minus
+
+        # Calculate the dot products and magnitudes for xz plane
+        dot_product_xz = p_plus_x * p_minus_x + p_plus_z * p_minus_z
+        magnitude_plus_xz = np.sqrt(p_plus_x**2 + p_plus_z**2)
+        magnitude_minus_xz = np.sqrt(p_minus_x**2 + p_minus_z**2)
+
+        # Calculate the opening angle in the xz plane
+        theta_xz = np.arccos(dot_product_xz / (magnitude_plus_xz * magnitude_minus_xz))
+
+        # Calculate the dot products and magnitudes for yz plane
+        dot_product_yz = p_plus_y * p_minus_y + p_plus_z * p_minus_z
+        magnitude_plus_yz = np.sqrt(p_plus_y**2 + p_plus_z**2)
+        magnitude_minus_yz = np.sqrt(p_minus_y**2 + p_minus_z**2)
+
+        # Calculate the opening angle in the yz plane
+        theta_yz = np.arccos(dot_product_yz / (magnitude_plus_yz * magnitude_minus_yz))
+
+        return theta_xz, theta_yz
+
+
+
+    def angle_between_lines(self,slope1, slope2):
+        if slope1 == slope2:
+            return 0.0  # The lines are parallel
+        # Calculate the tangent of the angle between the lines
+        tan_theta = abs((slope2 - slope1) / (1 + slope1 * slope2))
+    
+        # Convert the tangent to an angle in degrees
+        angle = ROOT.TMath.ATan(tan_theta) #* (180 / ROOT.TMath.Pi())
+    
+        return angle
+
+
     def is_UShit_isolated(self,theHit):
         detID = theHit.GetDetectorID()
         the_plane  = (detID%10000)//1000
         the_bar = detID%1000
         isolated = True
-        for aHit in self.eventTree.Digi_MuFilterHits:
+        for aHit in eventTree.Digi_MuFilterHits:
             if aHit.GetSystem()!=2 : continue
             if aHit.GetDetectorID() == detID : continue 
             if (aHit.GetDetectorID()%10000)//1000 == the_plane:
                 if abs(the_bar-aHit.GetDetectorID()%1000)==1:isolated = False
         return isolated
-
-    def systemAndOrientation(self,s,plane):
-        if s==1 or s==2: return "horizontal"
-        if plane%2==1 or plane == 6: return "vertical"
-        return "horizontal"
 
 
     def map2Dict_qdc(self,aHit,T='GetAllSignals',mask=True):
@@ -449,59 +687,50 @@ class MuonTridentEngine:
         return theDict
 
 
-    
-    def sparse_event(self,clusters,track,p,w):
-        sorted_clusters=self.tools.scifi_clusters_per_plane(clusters)
-        sparse = True
-        A,B = ROOT.TVector3(),ROOT.TVector3()
-        for so in sorted_clusters:
-            if not so%10 == p :continue
-            aCl = sorted_clusters[so][0]
-            aCl.GetPosition(A,B)
-            ex = track.Eval(A[2])
-            rho=0
-            for aCl in sorted_clusters[so]:
-                aCl.GetPosition(A,B)
-                if p==0 : pos=(A[1]+B[1])/2
-                else : pos=(A[0]+B[0])/2
-                if abs(pos-ex)<1 : rho+=aCl.GetN()
-            self.hist["n_clu_so"+str(so)+"_MC"].Fill(rho,w*40*2.58)
-            if rho>10: sparse=False
-        return sparse
- 
 
-
-    def clusterType(self,aCl,h2p):
-        DetID2Key = {}
-        for nHit in range(eventTree.Digi_ScifiHits.GetEntries()):
-            DetID2Key[eventTree.Digi_ScifiHits[nHit].GetDetectorID()] = nHit
-        for nh in range(aCl.GetN()):
-            detID = aCl.GetFirst() # + nh
-            aHit = eventTree.Digi_ScifiHits[DetID2Key[detID]]
-            theDict = self.map2Dict(h2p,detID)
-        return theDict
-
-    def three_clusters(self,h2p,daughter1,daughter2,clusters):
-        sorted_clusters = self.tools.scifi_clusters_per_plane(clusters)
-        three_clu = {k : {s * 10 + o: [] for s in range(1, 6) for o in range(2)} for k in range(3)}
-        DetID2Key = {}
-        for nHit in range(eventTree.Digi_ScifiHits.GetEntries()):
-            DetID2Key[eventTree.Digi_ScifiHits[nHit].GetDetectorID()] = nHit
-        for so in sorted_clusters:
-            for aCl in sorted_clusters[so]:
-                for nh in range(aCl.GetN()):
-                    detID = aCl.GetFirst()+nh
-                    aHit = eventTree.Digi_ScifiHits[DetID2Key[detID]]
+    def three_clusters(self,h2p,daughter1,daughter2,obj_array,trackType):
+        if trackType=='scifi':
+            sorted_clusters = self.tools.scifi_clusters_per_plane(obj_array)
+            three_clu = {k : {s * 10 + o: [] for s in range(1, 6) for o in range(2)} for k in range(3)}
+            DetID2Key = {}
+            for nHit in range(eventTree.Digi_ScifiHits.GetEntries()):
+                DetID2Key[eventTree.Digi_ScifiHits[nHit].GetDetectorID()] = nHit
+            for so in sorted_clusters:
+                for aCl in sorted_clusters[so]:
+                    for nh in range(aCl.GetN()):
+                        detID = aCl.GetFirst()+nh
+                        aHit = eventTree.Digi_ScifiHits[DetID2Key[detID]]
+                        theDict = self.map2Dict(h2p,detID)
+                        for link_point in theDict:
+                            if eventTree.ScifiPoint[link_point].GetTrackID()< -1 :continue
+                            registered_track = eventTree.MCTrack[eventTree.ScifiPoint[link_point].GetTrackID()]
+                            if registered_track == daughter1 and aCl not in three_clu[1][so] : three_clu[1][so].append(aCl)
+                            if registered_track == daughter2 and aCl not in three_clu[2][so] : three_clu[2][so].append(aCl)
+                            if registered_track == eventTree.MCTrack[0] and aCl not in three_clu[0][so] : three_clu[0][so].append(aCl)
+            return three_clu
+        else:
+            sorted_hits = {s * 10 + o: [] for s in range(1, 5) for o in range(2)}
+            for aHit in obj_array:
+                if aHit.GetSystem() !=3 : continue
+                detID = aHit.GetDetectorID()
+                station  = (detID%10000)//1000  # station number
+                bar = (detID%1000)
+                so = (station+1)*10+(bar>59)
+                sorted_hits[so].append(aHit)
+            three_clu = {k: {s * 10 + o: [] for s in range(1, 5) for o in range(2)} for k in range(3)} 
+            for so in sorted_hits:
+                for aHit in sorted_hits[so]:
+                    detID = aHit.GetDetectorID()
                     theDict = self.map2Dict(h2p,detID)
                     for link_point in theDict:
-                        if eventTree.ScifiPoint[link_point].GetTrackID()< -1 :continue
-                        registered_track = eventTree.MCTrack[eventTree.ScifiPoint[link_point].GetTrackID()]
-                        if registered_track == daughter1 and aCl not in three_clu[1][so] : three_clu[1][so].append(aCl)
-                        if registered_track == daughter2 and aCl not in three_clu[2][so] : three_clu[2][so].append(aCl)
-                        if registered_track == eventTree.MCTrack[0] and aCl not in three_clu[0][so] : three_clu[0][so].append(aCl)
-        return three_clu
+                        if eventTree.MuFilterPoint[link_point].GetTrackID()< -1 :continue
+                        registered_track = eventTree.MCTrack[eventTree.MuFilterPoint[link_point].GetTrackID()]
+                        if registered_track == daughter1 and aHit not in three_clu[1][so] : three_clu[1][so].append(aHit)
+                        if registered_track == daughter2 and aHit not in three_clu[2][so] : three_clu[2][so].append(aHit)
+                        if registered_track == eventTree.MCTrack[0] and aHit not in three_clu[0][so] : three_clu[0][so].append(aHit)
+            return three_clu 
 
-    def check_three_accepted_clusterwise(self, three_clu):
+    def check_three_accepted(self, three_clu):
         accepted={0:True,1:True,2:True}
         for k in three_clu:
             nCl_hor = 0
@@ -514,44 +743,66 @@ class MuonTridentEngine:
             if nCl_ver< 1 or nCl_hor < 1 : accepted[k] = False
         return all(accepted.values())
 
-    def with_original_muon(self,three_clu):
-        n_original_mu = 0
-        for so in three_clu[0]:
-            n_original_mu+=len(three_clu[0][so])
-        if n_original_mu<1: return False
-        else : return True
 
 
-    def check_three_accepted(self,h2p, daughter1, daughter2):
-        three_hits = {k : False for k in range(3)}
-        for aHit in eventTree.Digi_ScifiHits:
-            detID = aHit.GetDetectorID()
-            theDict = self.map2Dict(h2p,detID)
-            for link_point in theDict:
-                registered_track = eventTree.MCTrack[eventTree.ScifiPoint[link_point].GetTrackID()]
-                if registered_track == daughter1 : three_hits[1] = True
-                if registered_track == daughter2 : three_hits[2] = True
-                if registered_track == eventTree.MCTrack[0]: three_hits[0] = True
-                
-        return all(three_hits.values())
 
- 
+    def check_all_planes(self,obj_array,trackType):
+        if trackType=='scifi':
+            sorted_clusters = self.tools.scifi_clusters_per_plane(obj_array)
+            for so in sorted_clusters:
+                if len(sorted_clusters[so]) < 1 :return False
+            return True
 
-    def check_planes_with_hits(self):
-        planes_with_hits = {s * 10 + o: False for s in range(1, 6) for o in range(2)}
-        for aHit in eventTree.Digi_ScifiHits :
-            detID = aHit.GetDetectorID()
-            s = int(detID/1000000)
-            o = int(detID/100000)%10
-            so = 10*s+o
-            planes_with_hits[so]=True
-        return all(planes_with_hits.values())
+        else:
+            planes_with_hits = {s*10+o:False for s in range(1,5) for o in range(2)}
+            for aHit in obj_array:
+                if aHit.GetSystem()!=3 : continue
+                detID =aHit.GetDetectorID()
+                station  = (detID%10000)//1000  # station number
+                bar = (detID%1000)
+                so = (station+1)*10+(bar>59)
+                planes_with_hits[so]=True
+            planes_with_hits[40]=True
+            return all(planes_with_hits.values())
 
-    def check_all_planes(self,clusters):
-        sorted_clusters = self.tools.scifi_clusters_per_plane(clusters)
-        for so in sorted_clusters:
-            if len(sorted_clusters[so]) < 1 :return False
+
+
+    def recoble_DS(self,three_clu):
+        planes = [s * 10 + o for s in range(1, 5) for o in range(2)]
+        nOverlap = {'12':0,'13':0,'23':0}
+        for k in three_clu:
+            planes_with_hit_hor = 0
+            planes_with_hit_ver = 0
+            for so in three_clu[k]:
+                if so%2==1:
+                    if len(three_clu[k][so])>0 : planes_with_hit_ver += 1
+                else:
+                    if len(three_clu[k][so])>0 : planes_with_hit_hor +=1
+            if planes_with_hit_hor < 3 : return False
+            if planes_with_hit_ver < 4 : return False
+        for so in planes:
+            if so == 40 : continue
+            for aHit_daughter1 in three_clu[1][so]:
+                if aHit_daughter1 in three_clu[2][so] : return False #nOverlap['12']+=1
+                for aHit_daughter2 in three_clu[2][so]:
+                    if aHit_daughter2 in three_clu[1][so] :return False
+                    if aHit_daughter1==aHit_daughter2 :return False
+
+            for aHit_mother in three_clu[0][so]:
+                if aHit_mother in three_clu[1][so] : return False #nOverlap['13']+=1 # return False
+                for aHit_daughter1 in three_clu[1][so]:
+                    if aHit_daughter1 in three_clu[0][so] :return False
+                    if aHit_daughter1==aHit_mother : return False
+
+            for aHit_mother in three_clu[0][so]:
+                if aHit_mother in three_clu[2][so]: return False  #nOverlap['23']+=1 #return False
+                for aHit_daughter2 in three_clu[2][so]:
+                    if aHit_daughter2 in three_clu[0][so] :return False
+                    if aHit_daughter2==aHit_mother:return False
+
+#        if nOverlap['13']>1 and nOverlap['23']>1 and nOverlap['12']>1 : return False
         return True
+
 
     def recoble(self,three_clu):
         planes = [s * 10 + o for s in range(1, 6) for o in range(2)]
@@ -571,58 +822,34 @@ class MuonTridentEngine:
             for aCl_daughter1 in three_clu[1][so]:
                 if aCl_daughter1 in three_clu[2][so] : return False #nOverlap['12']+=1
                 aCl_daughter1.GetPosition(A,B)
-                if so%2==1:
-                    pos_1 = (A[0]+B[0])/2
-                else:
-                    pos_1 = (A[1]+B[1])/2
                 for aCl_daughter2 in three_clu[2][so]:
                     if aCl_daughter2 in three_clu[1][so] :return False
                     if aCl_daughter1==aCl_daughter2 :return False
-                    aCl_daughter2.GetPosition(A,B)
-                    if so%2==1:
-                        pos_2 = (A[0]+B[0])/2
-                    else:
-                        pos_2 = (A[1]+B[1])/2
-#                    if abs(pos_1-pos_2)<0.2: return False
-
             for aCl_mother in three_clu[0][so]:
                 aCl_mother.GetPosition(A,B)
                 if aCl_mother in three_clu[1][so] : return False #nOverlap['13']+=1 # return False
-                if so%2==1:
-                    pos_0 = (A[0]+B[0])/2
-                else:
-                    pos_0 = (A[1]+B[1])/2
                 for aCl_daughter1 in three_clu[1][so]:
                     if aCl_daughter1 in three_clu[0][so] :return False
                     if aCl_daughter1==aCl_mother : return False
-                    aCl_daughter1.GetPosition(A,B)
-                    if so%2==1:
-                        pos_1 = (A[0]+B[0])/2
-                    else:
-                        pos_1 = (A[1]+B[1])/2
-#                    if abs(pos_1-pos_0)<0.2: return False
-
             for aCl_mother in three_clu[0][so]:
                 aCl_mother.GetPosition(A,B)
                 if aCl_mother in three_clu[2][so]: return False  #nOverlap['23']+=1 #return False
-                if so%2==1:
-                    pos_0 = (A[0]+B[0])/2
-                else:
-                    pos_0 = (A[1]+B[1])/2 
                 for aCl_daughter2 in three_clu[2][so]:
                     if aCl_daughter2 in three_clu[0][so] :return False
                     if aCl_daughter2==aCl_mother:return False
-                    aCl_daughter2.GetPosition(A,B)
-                    if so%2==1:
-                        pos_2 = (A[0]+B[0])/2
-                    else:
-                        pos_2 = (A[1]+B[1])/2
 #                    if abs(pos_0-pos_2)<0.2: return False
 #        if nOverlap['13']>1 and nOverlap['23']>1 and nOverlap['12']>1 : return False
         return True
 
+    def with_original_muon(self,three_clu):
+        n_original_mu = 0
+        for so in three_clu[0]:
+            n_original_mu+=len(three_clu[0][so])
+        if n_original_mu<1: return False
+        else : return True
 
- 
+
+
 
     def map2Dict(self,hit2point,detID):
         key  = ROOT.std.vector('int')()
@@ -651,104 +878,58 @@ class MuonTridentEngine:
                 file.write(f"{item}\n")
 
 
-    def invariant_mass(self,p1,p2):
-        V0Mom=p1+p2
+    def invariant_mass(self,p1,p2,p3):
+        V0Mom=p1+p2+p3
         return V0Mom.M()
 
     def vertex_array(self,mctrack_array):
         mu_dict={'MuonToMuonPair':[],'GammaToMuonPair':[],'PositronToMuonPair':[]}
         for mctrack in mctrack_array:
             moId = mctrack.GetMotherId()
-            if moId<0:continue
-            if abs(mctrack.GetPdgCode())==13 and abs(mctrack_array[moId].GetPdgCode()) == 13 and mctrack.GetProcName() == 'Lepton pair production': mu_dict['MuonToMuonPair'].append(mctrack)
-            if abs(mctrack.GetPdgCode())==13 and abs(mctrack_array[moId].GetPdgCode()) == 22 and mctrack.GetProcName() == 'Lepton pair production': mu_dict['GammaToMuonPair'].append(mctrack)
-            if abs(mctrack.GetPdgCode())==13 and abs(mctrack_array[moId].GetPdgCode()) == 11 and mctrack.GetProcName() == 'Positron annihilation': mu_dict['PositronToMuonPair'].append(mctrack)
+            if moId<0:
+                continue
+            if   abs(mctrack.GetPdgCode())==13 and abs(mctrack_array[moId].GetPdgCode()) == 13 and mctrack.GetProcName() == 'Lepton pair production':
+                mu_dict['MuonToMuonPair'].append(mctrack)
+            elif abs(mctrack.GetPdgCode())==13 and abs(mctrack_array[moId].GetPdgCode()) == 22 and mctrack.GetProcName() == 'Lepton pair production': 
+                mu_dict['GammaToMuonPair'].append(mctrack)
+            elif abs(mctrack.GetPdgCode())==13 and abs(mctrack_array[moId].GetPdgCode()) == 11 and mctrack.GetProcName() == 'Positron annihilation':
+                mu_dict['PositronToMuonPair'].append(mctrack)
+            else:
+                continue
         all_empty = all(not mu_dict[key] for key in mu_dict)
-        if all_empty : return []
-        vertices = {}
+        if all_empty :
+            return []
         list_of_vertices =[]
         for proc in mu_dict:
-            for trident_mu in mu_dict[proc]:
-                vx_z = trident_mu.GetStartZ()
-                if not vx_z in vertices : vertices[vx_z]=[],proc
-                vertices[vx_z][0].append(trident_mu)
-        for key in vertices:
-            vx_x, vx_y, vx_z = vertices[key][0][0].GetStartX(), vertices[key][0][0].GetStartY(), vertices[key][0][0].GetStartZ()#vertices[key][0][0].GetStartVertex(self.vertex_pos)
-            list_of_vertices.append(TridentVertex(vertices[key][1], [vx_x,vx_y,vx_z], vertices[key][0]))
+            keys = list(mu_dict[proc])
+            for i in range(len(mu_dict[proc])-1):
+                for j in range(i+1,len(mu_dict[proc])):
+                    mu1,mu2=keys[i],keys[j]
+                    moId_1, moId_2= mu1.GetMotherId(), mu2.GetMotherId()
+                    z1,z2 = mu1.GetStartZ(), mu2.GetStartZ()
+                    if moId_1 == moId_2 and abs(z1-z2)<1e-6:
+                        vx_x, vx_y, vx_z = mu1.GetStartX(), mu1.GetStartY(), mu1.GetStartZ()
+                        list_of_vertices.append(TridentVertex(proc, [vx_x,vx_y,vx_z], [mu1,mu2], mctrack_array[moId_1]))
         return list_of_vertices
 
 
 
 class TridentVertex:
-    def __init__(self, trident_type, vertex_pos, daughters):
+    def __init__(self, trident_type, vertex_pos, daughters,mother):
         self.trident_type = trident_type
         self.vertex_pos = vertex_pos
         self.daughters = daughters
+        self.mother = mother
     def get_trident_type(self):
         return self.trident_type
     def get_vertex_pos(self):
         return self.vertex_pos
     def get_daughters(self):
         return self.daughters
-
-
-class BaseCut:
-    def __init__(self):
-        print("snd cuts initiated")
-
-class CutScifiClustersStation(BaseCut):
-
-    def __init__(self):
-#        self.threshold_dict = {s * 10 + o: [0, 8] for s in range(1, 6) for o in range(2)}
-        self.tools = Tools()
-
-    def pass_cut(self):
-        clusters = self.tools.scifi_clusters()
-        sorted_clusters = self.tools.scifi_clusters_per_plane(clusters)
-        inter_cl_dist = self.tools.inter_cluster_dist(sorted_clusters)
-        for key in sorted_clusters:
-            ncl = len(sorted_clusters[key])
-            if ncl >= 8 : return False
-            if key > 31 and ncl < 2 : return False
-        if inter_cl_dist[40]<inter_cl_dist[50] or inter_cl_dist[41]<inter_cl_dist[51]: return True
-        if inter_cl_dist[40]>inter_cl_dist[50] and inter_cl_dist[41]>inter_cl_dist[51]:return False
-        return True
-
-class Tools:
-    def __init__(self):
-        print("scifi tools initiated")
-        
-    def scifi_clusters(self):
-        trackTask.clusScifi.Clear()
-        trackTask.scifiCluster()
-        clusters = trackTask.clusScifi
-        return clusters
-
-    def scifi_clusters_per_plane(self,clusters):
-        sortedClusters = {s * 10 + o: [] for s in range(1, 6) for o in range(2)}
-        for aCl in clusters:
-            so = aCl.GetFirst()//100000
-            sortedClusters[so].append(aCl)
-        return sortedClusters
-
-    def inter_cluster_dist(self,clusters_per_plane):
-        A,B = ROOT.TVector3(), ROOT.TVector3()
-        cluster_seperation_per_plane = {}
-        for so in clusters_per_plane:
-            cluster_pos = []
-            cluster_list = clusters_per_plane[so]
-            for aCl in cluster_list:
-                aCl.GetPosition(A,B)
-                if so%2==1: pos = (A[0]+B[0])/2
-                else: pos = (A[1]+B[1])/2
-                cluster_pos.append(pos)
-            sorted_pos = sorted(cluster_pos,reverse = True)
-            if len(sorted_pos)>0 : cluster_seperation_per_plane[so] = abs(sorted_pos[0]-sorted_pos[-1])
-        return cluster_seperation_per_plane
+    def get_mother(self):
+        return self.mother
 
 
 
 x = MuonTridentEngine()
-rc = x.efficiency()
-
-
+rc = x.efficiency(options.trackType)
